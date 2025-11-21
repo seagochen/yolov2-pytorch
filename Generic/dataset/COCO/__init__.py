@@ -1,7 +1,7 @@
 """
-COCO Dataset Module for YOLOv1
+COCO Dataset Module for YOLOv2
 """
 
-from .COCODataset import COCODataset, create_coco_yaml_template
+from .COCODatasetV2 import COCODatasetV2
 
-__all__ = ['COCODataset', 'create_coco_yaml_template']
+__all__ = ['COCODatasetV2']
