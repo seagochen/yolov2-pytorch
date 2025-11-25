@@ -27,7 +27,13 @@ from yolov2.utils import (
     check_img_size,
     colorstr,
     increment_path,
-    nms
+    nms,
+    # 微调组件
+    ReduceLROnPlateau,
+    EarlyStopping,
+    ModelEMA,
+    GradientAccumulator,
+    LabelSmoothingBCE
 )
 from yolov2.utils.metrics import ConfusionMatrix, DetectionMetrics
 from yolov2.utils.plots import (
@@ -73,6 +79,28 @@ def parse_args():
     parser.add_argument('--lambda-class', type=float, default=1.0,
                         help='Classification loss weight')
 
+    # 微调相关
+    parser.add_argument('--patience', type=int, default=5,
+                        help='Patience for ReduceLROnPlateau (epochs without improvement)')
+    parser.add_argument('--lr-factor', type=float, default=0.1,
+                        help='Factor to reduce learning rate')
+    parser.add_argument('--min-lr', type=float, default=1e-7,
+                        help='Minimum learning rate')
+    parser.add_argument('--max-lr-reductions', type=int, default=3,
+                        help='Max LR reductions before early stopping')
+    parser.add_argument('--early-stopping', action='store_true',
+                        help='Enable early stopping')
+    parser.add_argument('--accumulation-steps', type=int, default=1,
+                        help='Gradient accumulation steps')
+    parser.add_argument('--amp', action='store_true',
+                        help='Use Automatic Mixed Precision training')
+    parser.add_argument('--label-smoothing', type=float, default=0.0,
+                        help='Label smoothing factor (0.0 to disable)')
+    parser.add_argument('--ema', action='store_true',
+                        help='Use Exponential Moving Average for model weights')
+    parser.add_argument('--ema-decay', type=float, default=0.9999,
+                        help='EMA decay factor')
+
     # 评估相关
     parser.add_argument('--conf-thres', type=float, default=0.001,
                         help='Confidence threshold for evaluation')
@@ -111,11 +139,25 @@ def setup_device(device_str: str):
     return torch.device('cpu')
 
 
-def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, grad_clip=0.0):
+def train_one_epoch(
+    model,
+    dataloader,
+    criterion,
+    optimizer,
+    device,
+    epoch,
+    grad_clip=0.0,
+    scaler=None,
+    accumulator=None,
+    ema=None
+):
     """训练一个epoch
 
     Args:
         grad_clip: 梯度裁剪阈值，0表示不裁剪
+        scaler: GradScaler，用于混合精度训练
+        accumulator: GradientAccumulator，用于梯度累积
+        ema: ModelEMA，用于指数移动平均
     """
     model.train()
 
@@ -123,26 +165,63 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, grad
     total_loss = 0
     loss_components = {}
 
+    # 是否使用混合精度
+    use_amp = scaler is not None
+
     for batch_idx, (images, targets) in enumerate(pbar):
         # 移动到设备
         images = images.to(device)
         targets = targets.to(device)
 
-        # 前向传播
-        optimizer.zero_grad()
-        predictions = model(images)
+        # 混合精度前向传播
+        with torch.cuda.amp.autocast(enabled=use_amp):
+            predictions = model(images)
+            loss, loss_dict = criterion(predictions, targets)
 
-        # 计算损失
-        loss, loss_dict = criterion(predictions, targets)
+        # 反向传播（支持梯度累积）
+        if accumulator is not None:
+            # 梯度累积模式
+            if use_amp:
+                scaler.scale(loss / accumulator.accumulation_steps).backward()
+            else:
+                (loss / accumulator.accumulation_steps).backward()
 
-        # 反向传播
-        loss.backward()
+            # 检查是否应该更新参数
+            if accumulator.should_step(batch_idx):
+                if use_amp:
+                    if grad_clip > 0:
+                        scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    if grad_clip > 0:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                    optimizer.step()
+                optimizer.zero_grad()
 
-        # 梯度裁剪（防止梯度爆炸）
-        if grad_clip > 0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                # 更新EMA
+                if ema is not None:
+                    ema.update(model)
+        else:
+            # 标准模式
+            optimizer.zero_grad()
+            if use_amp:
+                scaler.scale(loss).backward()
+                if grad_clip > 0:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                if grad_clip > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                optimizer.step()
 
-        optimizer.step()
+            # 更新EMA
+            if ema is not None:
+                ema.update(model)
 
         # 统计
         total_loss += loss.item()
@@ -312,8 +391,17 @@ def main():
     print(f'Dataset: {args.data}')
     print(f'Image size: {args.img_size}')
     print(f'Batch size: {args.batch_size}')
+    if args.accumulation_steps > 1:
+        effective_batch = args.batch_size * args.accumulation_steps
+        print(f'Effective batch size: {effective_batch} (accumulation: {args.accumulation_steps})')
     print(f'Epochs: {args.epochs}')
     print(f'Save directory: {save_dir}')
+    print(colorstr('bright_yellow', '--- Fine-tuning Features ---'))
+    print(f'ReduceLROnPlateau: patience={args.patience}, factor={args.lr_factor}')
+    print(f'Early Stopping: {"enabled" if args.early_stopping else "disabled"} (max_lr_reductions={args.max_lr_reductions})')
+    print(f'Mixed Precision (AMP): {"enabled" if args.amp else "disabled"}')
+    print(f'Model EMA: {"enabled" if args.ema else "disabled"} (decay={args.ema_decay})')
+    print(f'Label Smoothing: {args.label_smoothing}')
     print('='*60)
 
     # 设置设备
@@ -394,7 +482,8 @@ def main():
         anchors=torch.from_numpy(train_dataset.anchors),
         lambda_coord=args.lambda_coord,
         lambda_noobj=args.lambda_noobj,
-        lambda_class=args.lambda_class
+        lambda_class=args.lambda_class,
+        label_smoothing=args.label_smoothing
     )
 
     # 创建优化器 - 使用AdamW更稳定
@@ -406,18 +495,46 @@ def main():
         eps=1e-8
     )
 
-    # 学习率调度 - 使用CosineAnnealing更平滑
-    # 先warmup，然后cosine decay
+    # 学习率调度 - 使用CosineAnnealing + ReduceLROnPlateau
+    # warmup阶段使用LambdaLR，之后由ReduceLROnPlateau接管
     def lr_lambda(epoch):
         if epoch < args.warmup_epochs:
             # Warmup阶段：线性增长
             return (epoch + 1) / args.warmup_epochs
         else:
-            # Cosine decay
+            # Cosine decay作为基础调度
             progress = (epoch - args.warmup_epochs) / (args.epochs - args.warmup_epochs)
             return 0.5 * (1 + np.cos(np.pi * progress))
 
-    scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+    warmup_scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+    # ReduceLROnPlateau - 当验证损失不下降时降低学习率
+    lr_plateau = ReduceLROnPlateau(
+        optimizer,
+        mode='min',
+        factor=args.lr_factor,
+        patience=args.patience,
+        min_lr=args.min_lr,
+        verbose=True
+    )
+
+    # Early Stopping - 连续多次降低学习率后仍无改善则停止
+    early_stopping = EarlyStopping(
+        patience=args.patience,
+        mode='min',
+        check_lr_reductions=True,
+        max_lr_reductions=args.max_lr_reductions,
+        verbose=True
+    ) if args.early_stopping else None
+
+    # 混合精度训练
+    scaler = torch.cuda.amp.GradScaler() if args.amp and device.type == 'cuda' else None
+
+    # 梯度累积
+    accumulator = GradientAccumulator(args.accumulation_steps) if args.accumulation_steps > 1 else None
+
+    # Model EMA
+    ema = ModelEMA(model, decay=args.ema_decay) if args.ema else None
 
     # 创建可视化器
     plotter = TrainingPlotter(save_dir)
@@ -439,6 +556,15 @@ def main():
         start_epoch = ckpt['epoch']
         best_map = ckpt.get('best_map', 0.0)
         best_val_loss = ckpt.get('best_val_loss', float('inf'))
+        # 恢复微调组件状态
+        if 'lr_plateau' in ckpt:
+            lr_plateau.load_state_dict(ckpt['lr_plateau'])
+        if early_stopping and 'early_stopping' in ckpt:
+            early_stopping.load_state_dict(ckpt['early_stopping'])
+        if ema and 'ema' in ckpt:
+            ema.load_state_dict(ckpt['ema'])
+        if scaler and 'scaler' in ckpt:
+            scaler.load_state_dict(ckpt['scaler'])
         print(f'Resumed from epoch {start_epoch}')
 
     # 训练循环
@@ -449,17 +575,23 @@ def main():
         print(f'\n{colorstr("bright_cyan", "bold", f"Epoch {epoch}/{args.epochs-1}")}')
         print(f'LR: {optimizer.param_groups[0]["lr"]:.6f}')
 
-        # 训练
+        # 训练（传入新的组件）
         train_loss, train_dict = train_one_epoch(
             model, train_loader, criterion, optimizer, device, epoch,
-            grad_clip=args.grad_clip
+            grad_clip=args.grad_clip,
+            scaler=scaler,
+            accumulator=accumulator,
+            ema=ema
         )
 
         # 验证（只在最后一个epoch计算完整指标以节省时间）
         # 大部分epoch只计算loss，最后一个epoch计算完整指标
         compute_full_metrics = epoch == args.epochs - 1
+
+        # 使用EMA模型进行验证（如果启用）
+        val_model = ema.ema if ema else model
         val_metrics, _, _, _ = validate(
-            model,
+            val_model,
             val_loader,
             criterion,
             device,
@@ -471,8 +603,25 @@ def main():
             plot_samples=args.plot_samples
         )
 
-        # 更新学习率
-        scheduler.step()
+        # 更新学习率调度
+        # Warmup阶段使用LambdaLR
+        if epoch < args.warmup_epochs:
+            warmup_scheduler.step()
+        else:
+            # Warmup结束后，由ReduceLROnPlateau根据验证损失调整
+            current_val_loss_for_lr = val_metrics.get("val_loss", 0)
+            lr_reduced = lr_plateau.step(current_val_loss_for_lr)
+
+            # 检查早停
+            if early_stopping:
+                should_stop = early_stopping.step(
+                    current_val_loss_for_lr,
+                    lr_reduced=lr_reduced,
+                    num_lr_reductions=lr_plateau.num_lr_reductions
+                )
+                if should_stop:
+                    print(colorstr('red', 'bold', '\n⚠ Early stopping triggered!'))
+                    break
 
         # 合并指标
         all_metrics = {
@@ -504,15 +653,24 @@ def main():
             print(f'  mAP@0.5:0.95: {val_metrics.get("mAP@0.5:0.95", 0):.4f}')
             print(f'  F1: {val_metrics.get("f1", 0):.4f}')
 
-        # 保存检查点
+        # 保存检查点（包含微调组件状态）
         ckpt = {
             'epoch': epoch + 1,
             'model': model.state_dict(),
             'optimizer': optimizer.state_dict(),
             'metrics': all_metrics,
             'best_map': best_map,
-            'ema_val_loss': ema_val_loss
+            'ema_val_loss': ema_val_loss,
+            'best_val_loss': best_val_loss,
+            # 微调组件状态
+            'lr_plateau': lr_plateau.state_dict(),
         }
+        if early_stopping:
+            ckpt['early_stopping'] = early_stopping.state_dict()
+        if ema:
+            ckpt['ema'] = ema.state_dict()
+        if scaler:
+            ckpt['scaler'] = scaler.state_dict()
 
         # 保存最新
         torch.save(ckpt, weights_dir / 'last.pt')
@@ -523,13 +681,11 @@ def main():
             if current_map > best_map:
                 best_map = current_map
                 ckpt['best_map'] = best_map
-                ckpt['best_val_loss'] = best_val_loss
                 torch.save(ckpt, weights_dir / 'best.pt')
                 print(colorstr('bright_green', f'  ★ New best model! mAP@0.5: {best_map:.4f}'))
         else:  # 否则使用EMA平滑后的val_loss作为标准（越小越好）
             if ema_val_loss < best_val_loss:
                 best_val_loss = ema_val_loss
-                ckpt['best_map'] = best_map
                 ckpt['best_val_loss'] = best_val_loss
                 torch.save(ckpt, weights_dir / 'best.pt')
                 print(colorstr('bright_green', f'  ★ New best model! Val Loss (EMA): {ema_val_loss:.4f}'))
@@ -558,15 +714,24 @@ def main():
 
     if best_weights.exists():
         print(f'Loading best model from {best_weights}')
-        model.load_state_dict(torch.load(best_weights, weights_only=False)['model'])
+        ckpt = torch.load(best_weights, weights_only=False)
+        model.load_state_dict(ckpt['model'])
+        # 如果启用了EMA，也加载EMA权重
+        if ema and 'ema' in ckpt:
+            ema.load_state_dict(ckpt['ema'])
     elif last_weights.exists():
         print(f'Loading last model from {last_weights}')
-        model.load_state_dict(torch.load(last_weights, weights_only=False)['model'])
+        ckpt = torch.load(last_weights, weights_only=False)
+        model.load_state_dict(ckpt['model'])
+        if ema and 'ema' in ckpt:
+            ema.load_state_dict(ckpt['ema'])
     else:
         print('No saved weights found, using current model state')
 
+    # 使用EMA模型进行最终评估
+    final_model = ema.ema if ema else model
     final_metrics, _, _, _ = validate(
-        model,
+        final_model,
         val_loader,
         criterion,
         device,

@@ -39,6 +39,14 @@
 - 💾 **Smart Checkpointing**: Auto-save best models based on mAP or validation loss
 - 📉 **Real-Time Monitoring**: Live progress bars with detailed loss component tracking
 
+### 🎛️ **Advanced Fine-tuning**
+- 📉 **ReduceLROnPlateau**: Auto-reduce learning rate when validation loss plateaus
+- 🛑 **Early Stopping**: Stop training when no improvement after multiple LR reductions
+- ⚡ **Mixed Precision (AMP)**: 2x faster training with half memory usage
+- 📦 **Gradient Accumulation**: Simulate larger batch sizes on limited GPU memory
+- 🔄 **Model EMA**: Exponential Moving Average for more stable inference
+- 🏷️ **Label Smoothing**: Prevent overconfidence and improve generalization
+
 ---
 
 ## 📁 Project Structure
@@ -56,7 +64,8 @@
 │       ├── loss.py             # YOLOv2 loss function
 │       ├── general.py          # NMS, IoU, etc.
 │       ├── metrics.py          # Evaluation metrics (mAP, Precision, Recall)
-│       └── plots.py            # Visualization tools (PR curves, confusion matrix)
+│       ├── plots.py            # Visualization tools (PR curves, confusion matrix)
+│       └── callbacks.py        # Training callbacks (EarlyStopping, LR scheduler, EMA)
 ├── scripts/                     # Training & inference scripts
 │   ├── train.py                # Training script with full evaluation
 │   └── detect.py               # Detection/inference script
@@ -78,8 +87,8 @@
 
 ```bash
 # Clone repository
-git clone <your-repo-url>
-cd YOLOv1
+git clone https://github.com/seagochen/yolov2-pytorch
+cd yolov2-pytorch
 
 # Install dependencies
 pip install -r requirements.txt
@@ -122,9 +131,22 @@ python scripts/train.py \
 --project       Save directory (default: runs/train)
 --name          Experiment name (default: exp)
 --resume        Resume from checkpoint
---save-period   Save checkpoint every N epochs (default: 10)
 --grad-clip     Gradient clipping threshold (default: 10.0)
 --warmup-epochs Warmup epochs before cosine annealing (default: 3)
+```
+
+**Fine-tuning Arguments:**
+```
+--patience            Epochs without improvement before LR reduction (default: 5)
+--lr-factor           Factor to reduce learning rate (default: 0.1)
+--min-lr              Minimum learning rate (default: 1e-7)
+--early-stopping      Enable early stopping
+--max-lr-reductions   Max LR reductions before early stopping (default: 3)
+--amp                 Use Automatic Mixed Precision (FP16) training
+--accumulation-steps  Gradient accumulation steps (default: 1)
+--ema                 Use Exponential Moving Average for model weights
+--ema-decay           EMA decay factor (default: 0.9999)
+--label-smoothing     Label smoothing factor (default: 0.0)
 ```
 
 **Training Outputs:**
@@ -296,6 +318,43 @@ anchors = [
    python scripts/train.py --data path/to/custom.yaml --epochs 100
    ```
 
+### Fine-tuning Examples
+
+**Basic training with early stopping:**
+```bash
+# Stop if validation loss doesn't improve for 5 epochs × 3 LR reductions
+python scripts/train.py --data data/coco.yaml \
+    --patience 5 \
+    --early-stopping \
+    --max-lr-reductions 3
+```
+
+**Full fine-tuning suite (recommended):**
+```bash
+python scripts/train.py --data data/coco.yaml \
+    --patience 5 \
+    --early-stopping \
+    --max-lr-reductions 3 \
+    --amp \
+    --ema \
+    --label-smoothing 0.1
+```
+
+**Low GPU memory scenario:**
+```bash
+# Use gradient accumulation to simulate batch_size=64
+python scripts/train.py --data data/coco.yaml \
+    --batch-size 16 \
+    --accumulation-steps 4 \
+    --amp
+```
+
+**Fine-tuning workflow:**
+1. **Warmup phase** (first 3 epochs): LR linearly increases
+2. **Normal training**: Cosine annealing + ReduceLROnPlateau monitors val loss
+3. **LR reduction**: If no improvement for `patience` epochs, LR × `lr-factor`
+4. **Early stop**: After `max-lr-reductions` LR reductions without improvement
+
 ### Evaluation Metrics
 
 The training script automatically computes:
@@ -404,6 +463,15 @@ python -m yolov2.utils.loss
 ---
 
 ## 📝 Recent Updates
+
+### v1.3 - Advanced Fine-tuning Suite (2025-11)
+- ✅ **ReduceLROnPlateau**: Auto-reduce LR when val loss stops improving (patience=5)
+- ✅ **Early Stopping**: Stop training after N consecutive LR reductions without improvement
+- ✅ **Mixed Precision (AMP)**: FP16 training for 2x speedup and 50% memory reduction
+- ✅ **Gradient Accumulation**: Simulate larger batch sizes on limited GPU memory
+- ✅ **Model EMA**: Exponential Moving Average of model weights for stable inference
+- ✅ **Label Smoothing**: Prevent overconfidence and improve generalization
+- ✅ **Checkpoint State**: Save/restore all fine-tuning component states for seamless resume
 
 ### v1.2 - Training Stability Improvements (2025-01)
 - ✅ **Gradient Clipping**: Prevent gradient explosion during training

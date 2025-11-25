@@ -18,6 +18,7 @@ class YOLOv2Loss(nn.Module):
     - 更好的类型标注
     - 优化的计算效率
     - 详细的损失分解
+    - 支持标签平滑 (Label Smoothing)
     """
 
     def __init__(
@@ -27,7 +28,8 @@ class YOLOv2Loss(nn.Module):
         lambda_coord: float = 5.0,
         lambda_noobj: float = 0.5,
         lambda_class: float = 1.0,
-        reduction: str = 'sum'
+        reduction: str = 'sum',
+        label_smoothing: float = 0.0
     ):
         super().__init__()
 
@@ -36,6 +38,15 @@ class YOLOv2Loss(nn.Module):
         self.lambda_noobj = lambda_noobj
         self.lambda_class = lambda_class
         self.reduction = reduction
+        self.label_smoothing = label_smoothing
+
+        # 标签平滑参数
+        if label_smoothing > 0:
+            self.pos_label = 1.0 - label_smoothing
+            self.neg_label = label_smoothing / num_classes
+        else:
+            self.pos_label = 1.0
+            self.neg_label = 0.0
 
         # Anchors (如果提供)
         if anchors is not None:
@@ -149,13 +160,21 @@ class YOLOv2Loss(nn.Module):
         loss_conf = (loss_conf_obj + self.lambda_noobj * loss_conf_noobj) / normalizer
 
         # ========================================
-        # 3. 分类损失（使用BCEWithLogitsLoss更稳定）
+        # 3. 分类损失（使用BCEWithLogitsLoss更稳定，支持标签平滑）
         # ========================================
         if obj_mask.sum() > 0:
+            # 应用标签平滑
+            if self.label_smoothing > 0:
+                # 平滑目标：将1替换为pos_label，0替换为neg_label
+                smoothed_target = target_cls[obj_mask] * self.pos_label + \
+                                 (1 - target_cls[obj_mask]) * self.neg_label
+            else:
+                smoothed_target = target_cls[obj_mask]
+
             # 使用 BCEWithLogitsLoss 避免数值不稳定
             loss_class = F.binary_cross_entropy_with_logits(
                 pred_cls[obj_mask],
-                target_cls[obj_mask],
+                smoothed_target,
                 reduction='sum'
             )
             loss_class = self.lambda_class * loss_class / normalizer
