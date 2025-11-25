@@ -94,8 +94,11 @@ class YOLOv2Loss(nn.Module):
         obj_mask = target_conf > 0  # (B, num_anchors, grid_h, grid_w)
         noobj_mask = ~obj_mask
 
-        # 计算有物体的cell数量
+        # 计算有物体的cell数量（用于统计）
         num_obj = obj_mask.sum().float() + 1e-6
+
+        # 使用batch size进行归一化，而不是num_obj，以保持损失稳定性
+        normalizer = B * grid_h * grid_w
 
         # ========================================
         # 1. 坐标损失
@@ -124,44 +127,38 @@ class YOLOv2Loss(nn.Module):
             reduction='sum'
         )
 
-        loss_coord = self.lambda_coord * (loss_x + loss_y + loss_w + loss_h) / num_obj
+        loss_coord = self.lambda_coord * (loss_x + loss_y + loss_w + loss_h) / normalizer
 
         # ========================================
-        # 2. 置信度损失
+        # 2. 置信度损失（使用BCEWithLogitsLoss更稳定）
         # ========================================
-        # 对置信度应用sigmoid
-        pred_conf_sigmoid = torch.sigmoid(pred_conf)
-
-        # 有物体
-        loss_conf_obj = F.binary_cross_entropy(
-            pred_conf_sigmoid[obj_mask],
+        # 有物体 - 使用 BCEWithLogitsLoss 避免数值不稳定
+        loss_conf_obj = F.binary_cross_entropy_with_logits(
+            pred_conf[obj_mask],
             target_conf[obj_mask],
             reduction='sum'
         )
 
         # 无物体
-        loss_conf_noobj = F.binary_cross_entropy(
-            pred_conf_sigmoid[noobj_mask],
-            torch.zeros_like(pred_conf_sigmoid[noobj_mask]),
+        loss_conf_noobj = F.binary_cross_entropy_with_logits(
+            pred_conf[noobj_mask],
+            torch.zeros_like(pred_conf[noobj_mask]),
             reduction='sum'
         )
 
-        loss_conf = (loss_conf_obj + self.lambda_noobj * loss_conf_noobj) / num_obj
+        loss_conf = (loss_conf_obj + self.lambda_noobj * loss_conf_noobj) / normalizer
 
         # ========================================
-        # 3. 分类损失
+        # 3. 分类损失（使用BCEWithLogitsLoss更稳定）
         # ========================================
         if obj_mask.sum() > 0:
-            # 使用BCE loss（因为是multi-label）
-            pred_cls_sigmoid = torch.sigmoid(pred_cls[obj_mask])
-            target_cls_obj = target_cls[obj_mask]
-
-            loss_class = F.binary_cross_entropy(
-                pred_cls_sigmoid,
-                target_cls_obj,
+            # 使用 BCEWithLogitsLoss 避免数值不稳定
+            loss_class = F.binary_cross_entropy_with_logits(
+                pred_cls[obj_mask],
+                target_cls[obj_mask],
                 reduction='sum'
             )
-            loss_class = self.lambda_class * loss_class / num_obj
+            loss_class = self.lambda_class * loss_class / normalizer
         else:
             loss_class = torch.zeros(1, device=device)
 
@@ -170,17 +167,17 @@ class YOLOv2Loss(nn.Module):
         # ========================================
         total_loss = loss_coord + loss_conf + loss_class
 
-        # 损失字典
+        # 损失字典（使用normalizer保持一致性）
         loss_dict = {
             'total': total_loss.item(),
             'coord': loss_coord.item(),
-            'x': (loss_x / num_obj).item(),
-            'y': (loss_y / num_obj).item(),
-            'w': (loss_w / num_obj).item(),
-            'h': (loss_h / num_obj).item(),
+            'x': (loss_x / normalizer).item(),
+            'y': (loss_y / normalizer).item(),
+            'w': (loss_w / normalizer).item(),
+            'h': (loss_h / normalizer).item(),
             'conf': loss_conf.item(),
-            'conf_obj': (loss_conf_obj / num_obj).item(),
-            'conf_noobj': (loss_conf_noobj / num_obj).item(),
+            'conf_obj': (loss_conf_obj / normalizer).item(),
+            'conf_noobj': (loss_conf_noobj / normalizer).item(),
             'class': loss_class.item(),
             'num_obj': num_obj.item()
         }

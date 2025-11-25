@@ -137,3 +137,4 @@ data/
 \.vscode
 \.idea
 *.pth
+runs/
