@@ -218,6 +218,36 @@ class TrainingPlotter:
         print(f'Metrics saved to {save_path}')
 
 
+def _get_color_palette(n_colors: int = 80):
+    """生成颜色调色板，用于区分不同类别"""
+    colors = [
+        (255, 56, 56),    # 红
+        (255, 157, 151),  # 浅红
+        (255, 112, 31),   # 橙
+        (255, 178, 29),   # 黄橙
+        (207, 210, 49),   # 黄绿
+        (72, 249, 10),    # 绿
+        (146, 204, 23),   # 草绿
+        (61, 219, 134),   # 青绿
+        (26, 147, 52),    # 深绿
+        (0, 212, 187),    # 青
+        (44, 153, 168),   # 深青
+        (0, 194, 255),    # 天蓝
+        (52, 69, 147),    # 深蓝
+        (100, 115, 255),  # 蓝紫
+        (0, 24, 236),     # 蓝
+        (132, 56, 255),   # 紫
+        (82, 0, 133),     # 深紫
+        (203, 56, 255),   # 粉紫
+        (255, 149, 200),  # 粉
+        (255, 55, 199),   # 玫红
+    ]
+    # 如果需要更多颜色，循环使用
+    while len(colors) < n_colors:
+        colors = colors + colors
+    return colors[:n_colors]
+
+
 def plot_detection_samples(
     images: List[np.ndarray],
     predictions: List[List[Dict]],
@@ -240,6 +270,9 @@ def plot_detection_samples(
     n_images = min(len(images), max_images)
     n_cols = 4
     n_rows = (n_images + n_cols - 1) // n_cols
+
+    # 获取颜色调色板
+    colors = _get_color_palette(len(class_names))
 
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(20, 5 * n_rows))
     if n_rows == 1:
@@ -264,7 +297,7 @@ def plot_detection_samples(
         # 确保数组是连续的（OpenCV要求）
         img = np.ascontiguousarray(img)
 
-        # 绘制GT（绿色）
+        # 绘制GT（虚线框，按类别着色）
         if idx < len(targets) and len(targets[idx]) > 0:
             for gt in targets[idx]:
                 cls_id = int(gt[0])
@@ -281,22 +314,31 @@ def plot_detection_samples(
                 else:
                     x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
 
-                cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                color = colors[cls_id % len(colors)]
+                # GT用虚线（通过绘制多个短线段实现）
+                cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
                 label = class_names[cls_id] if cls_id < len(class_names) else f'cls{cls_id}'
-                cv2.putText(img, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX,
-                           0.5, (0, 255, 0), 2)
+                # 绘制标签背景
+                (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                cv2.rectangle(img, (x1, y1 - th - 6), (x1 + tw + 4, y1), color, -1)
+                cv2.putText(img, label, (x1 + 2, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX,
+                           0.5, (255, 255, 255), 1)
 
-        # 绘制预测（红色）
+        # 绘制预测（实线框，按类别着色）
         if idx < len(predictions):
             for pred in predictions[idx]:
                 cls_id = pred['class_id']
                 conf = pred['confidence']
                 x1, y1, x2, y2 = map(int, pred['bbox'])
 
-                cv2.rectangle(img, (x1, y1), (x2, y2), (255, 0, 0), 2)
+                color = colors[cls_id % len(colors)]
+                cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
                 label = f"{class_names[cls_id] if cls_id < len(class_names) else f'cls{cls_id}'} {conf:.2f}"
-                cv2.putText(img, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX,
-                           0.4, (255, 0, 0), 1)
+                # 绘制标签背景
+                (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+                cv2.rectangle(img, (x1, y2), (x1 + tw + 4, y2 + th + 6), color, -1)
+                cv2.putText(img, label, (x1 + 2, y2 + th + 2), cv2.FONT_HERSHEY_SIMPLEX,
+                           0.4, (255, 255, 255), 1)
 
         ax.imshow(img)
         ax.axis('off')

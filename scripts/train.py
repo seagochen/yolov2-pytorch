@@ -301,26 +301,56 @@ def validate(
             if compute_metrics:
                 batch_predictions = model.predict(images, conf_threshold=conf_thres, device=device)
 
-                # 转换targets格式
+                # 转换targets格式 - 从YOLO target tensor解码为 [class_id, x1, y1, x2, y2]
                 batch_targets = []
+                img_size = model.img_size
+                anchors = model.anchors.cpu().numpy()
+
                 for i in range(targets.size(0)):
                     target = targets[i]  # (num_anchors, grid_h, grid_w, 5+nc)
+                    num_anchors, grid_h, grid_w = target.size(0), target.size(1), target.size(2)
 
                     # 提取有物体的位置
                     obj_mask = target[:, :, :, 4] > 0
                     target_list = []
 
-                    for a in range(target.size(0)):
-                        for y in range(target.size(1)):
-                            for x in range(target.size(2)):
-                                if obj_mask[a, y, x]:
-                                    # 提取类别和bbox
-                                    class_probs = target[a, y, x, 5:]
+                    for a in range(num_anchors):
+                        for cy in range(grid_h):
+                            for cx in range(grid_w):
+                                if obj_mask[a, cy, cx]:
+                                    # 提取类别
+                                    class_probs = target[a, cy, cx, 5:]
                                     class_id = torch.argmax(class_probs).item()
 
-                                    # 这里bbox已经是归一化坐标，需要转换
-                                    # 简化处理：直接从预测中获取
-                                    target_list.append([class_id, 0, 0, 0, 0])
+                                    # 提取并解码bbox (tx, ty, tw, th)
+                                    tx = target[a, cy, cx, 0].item()
+                                    ty = target[a, cy, cx, 1].item()
+                                    tw = target[a, cy, cx, 2].item()
+                                    th = target[a, cy, cx, 3].item()
+
+                                    # YOLOv2解码公式
+                                    # bx = sigmoid(tx) + cx, by = sigmoid(ty) + cy
+                                    # bw = pw * exp(tw), bh = ph * exp(th)
+                                    anchor_w, anchor_h = anchors[a]
+
+                                    bx = (1 / (1 + np.exp(-tx)) + cx) / grid_w
+                                    by = (1 / (1 + np.exp(-ty)) + cy) / grid_h
+                                    bw = anchor_w * np.exp(tw) / grid_w
+                                    bh = anchor_h * np.exp(th) / grid_h
+
+                                    # 转换为像素坐标 (x1, y1, x2, y2)
+                                    x1 = (bx - bw / 2) * img_size
+                                    y1 = (by - bh / 2) * img_size
+                                    x2 = (bx + bw / 2) * img_size
+                                    y2 = (by + bh / 2) * img_size
+
+                                    # 裁剪到图像范围
+                                    x1 = max(0, min(img_size, x1))
+                                    y1 = max(0, min(img_size, y1))
+                                    x2 = max(0, min(img_size, x2))
+                                    y2 = max(0, min(img_size, y2))
+
+                                    target_list.append([class_id, x1, y1, x2, y2])
 
                     batch_targets.append(np.array(target_list) if target_list else np.zeros((0, 5)))
 
@@ -638,15 +668,22 @@ def main():
                     # 更新plotter以包含完整指标
                     all_metrics = {'train_loss': train_loss, **val_metrics}
                     plotter.update(epoch, all_metrics)
+                    # 打印最终指标
+                    print(f'\n{colorstr("bright_yellow", "Final Metrics")}:')
+                    print(f'  Precision: {val_metrics.get("precision", 0):.4f}')
+                    print(f'  Recall: {val_metrics.get("recall", 0):.4f}')
+                    print(f'  mAP@0.5: {val_metrics.get("mAP@0.5", 0):.4f}')
+                    print(f'  mAP@0.5:0.95: {val_metrics.get("mAP@0.5:0.95", 0):.4f}')
+                    print(f'  F1: {val_metrics.get("f1", 0):.4f}')
                     break
 
-        # 合并指标
+        # 合并指标（非早停情况）
         all_metrics = {
             'train_loss': train_loss,
             **val_metrics
         }
 
-        # 更新可视化
+        # 更新可视化（非早停情况）
         plotter.update(epoch, all_metrics)
 
         # 打印指标
