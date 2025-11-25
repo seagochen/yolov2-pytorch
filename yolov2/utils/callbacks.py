@@ -161,6 +161,15 @@ class EarlyStopping:
         else:
             self.is_better = lambda a, best: a > best + self.min_delta
 
+    def reset(self):
+        """
+        重置早停计数器
+
+        当模型被更新（保存为最佳模型）时调用此方法，
+        避免因为监控指标与模型选择指标不同而导致的误触发早停。
+        """
+        self.counter = 0
+
     def step(self, metrics, lr_reduced=False, num_lr_reductions=0):
         """
         检查是否应该停止训练

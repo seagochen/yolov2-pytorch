@@ -176,7 +176,7 @@ def train_one_epoch(
         targets = targets.to(device)
 
         # 混合精度前向传播
-        with torch.cuda.amp.autocast(enabled=use_amp):
+        with torch.amp.autocast('cuda', enabled=use_amp):
             predictions = model(images)
             loss, loss_dict = criterion(predictions, targets)
 
@@ -560,7 +560,7 @@ def main():
     ) if args.early_stopping else None
 
     # 混合精度训练
-    scaler = torch.cuda.amp.GradScaler() if args.amp and device.type == 'cuda' else None
+    scaler = torch.amp.GradScaler('cuda') if args.amp and device.type == 'cuda' else None
 
     # 梯度累积
     accumulator = GradientAccumulator(args.accumulation_steps) if args.accumulation_steps > 1 else None
@@ -743,12 +743,18 @@ def main():
                 ckpt['best_map'] = best_map
                 torch.save(ckpt, weights_dir / 'best.pt')
                 print(colorstr('bright_green', f'  ★ New best model! mAP@0.5: {best_map:.4f}'))
+                # 模型更新时重置早停计数器
+                if early_stopping:
+                    early_stopping.reset()
         else:  # 否则使用EMA平滑后的val_loss作为标准（越小越好）
             if ema_val_loss < best_val_loss:
                 best_val_loss = ema_val_loss
                 ckpt['best_val_loss'] = best_val_loss
                 torch.save(ckpt, weights_dir / 'best.pt')
                 print(colorstr('bright_green', f'  ★ New best model! Val Loss (EMA): {ema_val_loss:.4f}'))
+                # 模型更新时重置早停计数器
+                if early_stopping:
+                    early_stopping.reset()
 
         # 定期保存
         if (epoch + 1) % 10 == 0:
