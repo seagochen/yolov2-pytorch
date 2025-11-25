@@ -52,8 +52,9 @@ class TrainingPlotter:
         self.history['epoch'].append(epoch)
 
         for key in self.history.keys():
-            if key != 'epoch' and key in metrics:
-                self.history[key].append(metrics[key])
+            if key != 'epoch':
+                # 如果metrics中有该键则使用其值，否则用None填充，保证长度一致
+                self.history[key].append(metrics.get(key, None))
 
     def plot_training_curves(self):
         """绘制训练曲线"""
