@@ -54,37 +54,51 @@ def parse_args():
     return parser.parse_args()
 
 
-def load_model(weights_path, device):
+def load_model(weights_path, device, num_classes=None):
     """加载模型"""
     print(colorstr('bright_green', f'\nLoading model from {weights_path}'))
 
-    ckpt = torch.load(weights_path, map_location=device)
+    ckpt = torch.load(weights_path, map_location=device, weights_only=False)
 
     # 获取配置
     if 'model' in ckpt:
         state_dict = ckpt['model']
+    elif 'model_state_dict' in ckpt:
+        state_dict = ckpt['model_state_dict']
     else:
         state_dict = ckpt
 
+    # 从检查点获取类别数，或从 state_dict 推断
+    if num_classes is None:
+        if 'num_classes' in ckpt:
+            num_classes = ckpt['num_classes']
+        else:
+            # 从 detection_out 层的权重形状推断类别数
+            # 输出通道数 = num_anchors * (5 + num_classes)
+            # 默认 num_anchors = 5
+            out_channels = state_dict['detection_out.weight'].shape[0]
+            num_classes = out_channels // 5 - 5
+            print(colorstr('bright_yellow', f'Inferred num_classes={num_classes} from checkpoint'))
+
     # 创建模型
-    model = create_yolov2(num_classes=80, img_size=640)
+    model = create_yolov2(num_classes=num_classes, img_size=640)
     model.load_state_dict(state_dict)
     model = model.to(device)
     model.eval()
 
     print(colorstr('bright_green', '✓ Model loaded successfully'))
-    return model
+    return model, num_classes
 
 
-def load_class_names(yaml_path):
+def load_class_names(yaml_path, num_classes=80):
     """加载类别名称"""
     if not os.path.exists(yaml_path):
-        return [f'class_{i}' for i in range(80)]
+        return [f'class_{i}' for i in range(num_classes)]
 
     with open(yaml_path, 'r') as f:
         config = yaml.safe_load(f)
 
-    return config.get('names', [f'class_{i}' for i in range(80)])
+    return config.get('names', [f'class_{i}' for i in range(num_classes)])
 
 
 def draw_boxes(img, detections, class_names):
@@ -192,10 +206,10 @@ def main():
         save_dir = None
 
     # 加载模型
-    model = load_model(args.weights, device)
+    model, num_classes = load_model(args.weights, device)
 
     # 加载类别名称
-    class_names = load_class_names(args.data)
+    class_names = load_class_names(args.data, num_classes)
 
     # 检测
     source = Path(args.source)
