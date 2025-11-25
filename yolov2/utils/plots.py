@@ -37,7 +37,6 @@ class TrainingPlotter:
             'precision': [],
             'recall': [],
             'mAP@0.5': [],
-            'mAP@0.5:0.95': [],
             'f1': []
         }
 
@@ -103,17 +102,14 @@ class TrainingPlotter:
         ax.grid(True, alpha=0.3)
         ax.set_ylim([0, 1])
 
-        # 3. mAP
+        # 3. mAP@0.5
         ax = axes[1, 0]
         ep, vals = self._get_valid_data('mAP@0.5')
         if vals:
             ax.plot(ep, vals, 'purple', label='mAP@0.5', linewidth=2)
-        ep, vals = self._get_valid_data('mAP@0.5:0.95')
-        if vals:
-            ax.plot(ep, vals, 'orange', label='mAP@0.5:0.95', linewidth=2)
         ax.set_xlabel('Epoch')
         ax.set_ylabel('mAP')
-        ax.set_title('Mean Average Precision')
+        ax.set_title('mAP@0.5')
         ax.legend()
         ax.grid(True, alpha=0.3)
         ax.set_ylim([0, 1])
@@ -442,7 +438,6 @@ if __name__ == '__main__':
             'precision': epoch * 0.08,
             'recall': epoch * 0.07,
             'mAP@0.5': epoch * 0.06,
-            'mAP@0.5:0.95': epoch * 0.04,
             'f1': epoch * 0.075
         }
         plotter.update(epoch, metrics)

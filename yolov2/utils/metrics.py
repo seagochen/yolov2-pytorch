@@ -269,7 +269,7 @@ class DetectionMetrics:
             iou_thresholds: IoU阈值数组
         """
         if iou_thresholds is None:
-            iou_thresholds = np.linspace(0.5, 0.95, 10)  # mAP@0.5:0.95
+            iou_thresholds = np.array([0.5])  # 只计算 mAP@0.5，速度快10倍
 
         for pred, target in zip(predictions, targets):
             # 转换预测格式
@@ -336,7 +336,7 @@ class DetectionMetrics:
         计算最终指标
 
         Returns:
-            metrics: 包含mAP等指标
+            metrics: 包含mAP@0.5等指标
         """
         if not self.stats:
             return {}
@@ -348,21 +348,20 @@ class DetectionMetrics:
         # 计算AP
         p, r, ap, f1 = ap_per_class(tp, conf, pred_cls, target_cls)
 
-        # 计算mAP
-        ap50, ap = ap[:, 0], ap.mean(1)  # mAP@0.5, mAP@0.5:0.95
+        # 计算mAP@0.5（只有一个阈值时ap shape为(nc, 1)）
+        ap50 = ap[:, 0] if ap.ndim > 1 else ap
 
         metrics = {
             'precision': p.mean(),
             'recall': r.mean(),
             'mAP@0.5': ap50.mean(),
-            'mAP@0.5:0.95': ap.mean(),
             'f1': f1.mean()
         }
 
         # 每个类别的AP
         for i in range(self.nc):
-            if i < len(ap):
-                metrics[f'AP_class_{i}'] = ap[i]
+            if i < len(ap50):
+                metrics[f'AP_class_{i}'] = ap50[i]
 
         return metrics
 

@@ -678,7 +678,6 @@ def main():
                     print(f'  Precision: {val_metrics.get("precision", 0):.4f}')
                     print(f'  Recall: {val_metrics.get("recall", 0):.4f}')
                     print(f'  mAP@0.5: {val_metrics.get("mAP@0.5", 0):.4f}')
-                    print(f'  mAP@0.5:0.95: {val_metrics.get("mAP@0.5:0.95", 0):.4f}')
                     print(f'  F1: {val_metrics.get("f1", 0):.4f}')
                     break
 
@@ -712,7 +711,6 @@ def main():
             print(f'  Precision: {val_metrics["precision"]:.4f}')
             print(f'  Recall: {val_metrics["recall"]:.4f}')
             print(f'  mAP@0.5: {val_metrics.get("mAP@0.5", 0):.4f}')
-            print(f'  mAP@0.5:0.95: {val_metrics.get("mAP@0.5:0.95", 0):.4f}')
             print(f'  F1: {val_metrics.get("f1", 0):.4f}')
 
         # 保存检查点（包含微调组件状态）

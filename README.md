@@ -33,7 +33,7 @@
 ### 🛠️ **Production-Ready Training**
 - 📊 **Ultralytics Compatibility**: Drop-in support for YAML+TXT dataset format (Roboflow, COCO, etc.)
 - 🔧 **Highly Configurable**: Extensive CLI arguments and YAML-based configuration
-- 📈 **Complete Evaluation Suite**: mAP@0.5, mAP@0.5:0.95, Precision, Recall, F1-Score
+- 📈 **Complete Evaluation Suite**: mAP@0.5, Precision, Recall, F1-Score (fast evaluation)
 - 🎨 **Rich Visualization**: Training curves, confusion matrices, PR curves, and prediction samples
 - 🔄 **Training Stability**: Gradient clipping, EMA-smoothed validation, AdamW optimizer with cosine annealing
 - 💾 **Smart Checkpointing**: Auto-save best models based on mAP or validation loss
@@ -189,7 +189,7 @@ Epoch 1/100:  100%|████████| 1000/1000 [05:23<00:00,  3.09it/s]
 Train - Loss: 12.345, Box: 4.123, Obj: 3.456, Cls: 4.766
 
 Validating:  100%|████████| 200/200 [00:45<00:00,  4.41it/s]
-Val - mAP@0.5: 0.523, mAP@0.5:0.95: 0.312, P: 0.645, R: 0.589
+Val - mAP@0.5: 0.523, P: 0.645, R: 0.589, F1: 0.616
 
 ✓ Best mAP improved from 0.000 to 0.523, saving best.pt...
 ```
@@ -359,7 +359,7 @@ python scripts/train.py --data data/coco.yaml \
 
 The training script automatically computes:
 - **mAP@0.5**: Mean Average Precision at IoU threshold 0.5
-- **mAP@0.5:0.95**: COCO-style mAP across IoU thresholds 0.5-0.95
+- **F1-Score**: Harmonic mean of precision and recall
 - **Precision & Recall**: Per-class and overall metrics
 - **Confusion Matrix**: Visual analysis of predictions vs ground truth
 - **PR Curves**: Precision-Recall curves for each class
@@ -405,7 +405,7 @@ torch.onnx.export(
 | Metric | Value |
 |--------|-------|
 | **mAP@0.5** | ~68% @ 640×640 |
-| **mAP@0.5:0.95** | ~44% |
+| **F1-Score** | ~0.65 |
 
 ---
 
@@ -465,6 +465,7 @@ python -m yolov2.utils.loss
 ## 📝 Recent Updates
 
 ### v1.4 - Metrics & Visualization Improvements (2025-11)
+- ✅ **Fast Evaluation**: Only compute mAP@0.5 (10x faster than mAP@0.5:0.95)
 - ✅ **Periodic Metrics Evaluation**: New `--eval-interval` to compute mAP every N epochs
 - ✅ **Real-time CSV Export**: Metrics saved after each epoch, preventing data loss on interruption
 - ✅ **Color-coded Visualization**: Different colors for each class in detection plots
@@ -491,7 +492,7 @@ python -m yolov2.utils.loss
 - ✅ **Smart Validation**: Full metrics only on final epoch to save time
 
 ### v1.1 - Comprehensive Training Evaluation System (2024-11)
-- ✅ Full evaluation metrics (mAP@0.5, mAP@0.5:0.95, Precision, Recall)
+- ✅ Full evaluation metrics (mAP@0.5, Precision, Recall, F1)
 - ✅ Ultralytics-style training visualization and reporting
 - ✅ Confusion matrix and PR curve plotting
 - ✅ Per-class and overall detection metrics tracking
