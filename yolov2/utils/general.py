@@ -4,6 +4,7 @@ General utility functions
 """
 
 import torch
+import torchvision
 import numpy as np
 from typing import List, Dict, Tuple
 from pathlib import Path
@@ -14,7 +15,7 @@ def nms(
     iou_threshold: float = 0.5
 ) -> List[Dict]:
     """
-    非极大值抑制 (NMS)
+    非极大值抑制 (NMS) - 优化版 (使用 torchvision.ops.nms)
 
     Args:
         detections: 检测结果列表，每个dict包含 'class_id', 'confidence', 'bbox'
@@ -26,28 +27,31 @@ def nms(
     if len(detections) == 0:
         return []
 
-    # 按置信度排序
-    detections = sorted(detections, key=lambda x: x['confidence'], reverse=True)
+    # 提取数据构建 Tensor
+    boxes = []
+    scores = []
+    class_ids = []
 
-    filtered = []
+    for det in detections:
+        x1, y1, x2, y2 = det['bbox']
+        boxes.append([x1, y1, x2, y2])
+        scores.append(det['confidence'])
+        class_ids.append(det['class_id'])
 
-    while len(detections) > 0:
-        # 取置信度最高的
-        best = detections.pop(0)
-        filtered.append(best)
+    boxes_t = torch.tensor(boxes, device='cpu', dtype=torch.float32)
+    scores_t = torch.tensor(scores, device='cpu', dtype=torch.float32)
+    class_ids_t = torch.tensor(class_ids, device='cpu', dtype=torch.int64)
 
-        # 过滤与best IoU过高的框
-        remaining = []
-        for det in detections:
-            # 同类别且IoU高于阈值则过滤
-            if det['class_id'] == best['class_id']:
-                iou = box_iou(best['bbox'], det['bbox'])
-                if iou < iou_threshold:
-                    remaining.append(det)
-            else:
-                remaining.append(det)
+    # 为了对不同类别分别做NMS，使用坐标偏移技巧
+    max_coordinate = boxes_t.max() + 5000
+    offsets = class_ids_t.float() * max_coordinate
+    boxes_for_nms = boxes_t + offsets[:, None]
 
-        detections = remaining
+    # 使用 torchvision 的优化 NMS
+    keep_indices = torchvision.ops.nms(boxes_for_nms, scores_t, iou_threshold)
+
+    # 重建结果列表
+    filtered = [detections[idx] for idx in keep_indices.numpy()]
 
     return filtered
 

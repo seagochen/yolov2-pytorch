@@ -139,7 +139,7 @@ class YOLOv2(nn.Module):
         device: Optional[torch.device] = None
     ) -> List[List[Dict]]:
         """
-        预测并解码边界框
+        预测并解码边界框 (向量化加速版)
 
         Args:
             x: (B, 3, H, W)
@@ -155,37 +155,19 @@ class YOLOv2(nn.Module):
         if device is None:
             device = x.device
 
-        # 确保模型在评估模式
         self.eval()
+        output = self.forward(x)
 
-        # 前向传播
-        output = self.forward(x)  # (B, num_anchors, grid_h, grid_w, 5+num_classes)
+        return self._decode_predictions_vectorized(output, conf_threshold, device)
 
-        # 解码
-        predictions = self._decode_predictions(
-            output,
-            conf_threshold=conf_threshold,
-            device=device
-        )
-
-        return predictions
-
-    def _decode_predictions(
+    def _decode_predictions_vectorized(
         self,
         output: torch.Tensor,
         conf_threshold: float,
         device: torch.device
     ) -> List[List[Dict]]:
         """
-        解码YOLO输出为边界框
-
-        Args:
-            output: (B, num_anchors, grid_h, grid_w, 5+num_classes)
-            conf_threshold: 置信度阈值
-            device: 设备
-
-        Returns:
-            batch_predictions: 预测列表
+        向量化解码，大幅提升速度
         """
         B, num_anchors, grid_h, grid_w, _ = output.shape
 
@@ -193,72 +175,94 @@ class YOLOv2(nn.Module):
         if self.anchors.device != device:
             self.anchors = self.anchors.to(device)
 
+        # 1. 提取各个分量
+        tx = output[..., 0]
+        ty = output[..., 1]
+        tw = output[..., 2]
+        th = output[..., 3]
+        conf_raw = output[..., 4]
+        class_raw = output[..., 5:]
+
+        # 2. 激活函数
+        sigmoid_tx = torch.sigmoid(tx)
+        sigmoid_ty = torch.sigmoid(ty)
+        conf = torch.sigmoid(conf_raw)
+
+        # Softmax on classes
+        class_probs = torch.softmax(class_raw, dim=-1)
+        max_class_prob, class_id = torch.max(class_probs, dim=-1)
+
+        # 3. 计算最终置信度
+        final_conf = conf * max_class_prob
+
+        # 4. 构建网格坐标
+        grid_y, grid_x = torch.meshgrid(
+            torch.arange(grid_h, device=device),
+            torch.arange(grid_w, device=device),
+            indexing='ij'
+        )
+
+        # 扩展维度以匹配 (B, A, H, W)
+        grid_x = grid_x.view(1, 1, grid_h, grid_w).expand(B, num_anchors, -1, -1)
+        grid_y = grid_y.view(1, 1, grid_h, grid_w).expand(B, num_anchors, -1, -1)
+
+        # 扩展anchors
+        anchor_w = self.anchors[:, 0].view(1, num_anchors, 1, 1).expand(B, -1, grid_h, grid_w)
+        anchor_h = self.anchors[:, 1].view(1, num_anchors, 1, 1).expand(B, -1, grid_h, grid_w)
+
+        # 5. 计算绝对坐标 (归一化 0~1)
+        bx = (sigmoid_tx + grid_x) / grid_w
+        by = (sigmoid_ty + grid_y) / grid_h
+        bw = (anchor_w * torch.exp(tw)) / grid_w
+        bh = (anchor_h * torch.exp(th)) / grid_h
+
+        # 6. 转换为像素坐标 (x1, y1, x2, y2)
+        cx = bx * self.img_size
+        cy = by * self.img_size
+        w = bw * self.img_size
+        h = bh * self.img_size
+
+        x1 = cx - w / 2
+        y1 = cy - h / 2
+        x2 = cx + w / 2
+        y2 = cy + h / 2
+
+        # 裁剪到图像边缘
+        x1 = x1.clamp(min=0, max=self.img_size)
+        y1 = y1.clamp(min=0, max=self.img_size)
+        x2 = x2.clamp(min=0, max=self.img_size)
+        y2 = y2.clamp(min=0, max=self.img_size)
+
+        # 7. 过滤低置信度结果并转换为 List[List[Dict]]
         batch_predictions = []
+        mask = final_conf > conf_threshold
 
         for b in range(B):
-            image_predictions = []
+            b_mask = mask[b]
 
-            for i in range(grid_h):
-                for j in range(grid_w):
-                    for a in range(num_anchors):
-                        # 提取预测
-                        pred = output[b, a, i, j, :]  # (5+num_classes,)
+            if not b_mask.any():
+                batch_predictions.append([])
+                continue
 
-                        # 解析
-                        tx, ty, tw, th, conf_raw = pred[:5]
-                        class_raw = pred[5:]
+            # 使用掩码提取数据
+            cur_x1 = x1[b][b_mask]
+            cur_y1 = y1[b][b_mask]
+            cur_x2 = x2[b][b_mask]
+            cur_y2 = y2[b][b_mask]
+            cur_conf = final_conf[b][b_mask]
+            cur_cls = class_id[b][b_mask]
 
-                        # 应用sigmoid到置信度
-                        conf = torch.sigmoid(conf_raw)
+            image_preds = []
+            n_detections = cur_conf.size(0)
 
-                        if conf < conf_threshold:
-                            continue
+            for k in range(n_detections):
+                image_preds.append({
+                    'class_id': cur_cls[k].item(),
+                    'confidence': cur_conf[k].item(),
+                    'bbox': (cur_x1[k].item(), cur_y1[k].item(), cur_x2[k].item(), cur_y2[k].item())
+                })
 
-                        # 类别预测
-                        class_probs = torch.softmax(class_raw, dim=0)
-                        class_id = torch.argmax(class_probs).item()
-                        class_prob = class_probs[class_id].item()
-
-                        # 最终置信度
-                        final_conf = conf.item() * class_prob
-
-                        if final_conf < conf_threshold:
-                            continue
-
-                        # 解码边界框（YOLOv2公式）
-                        anchor_w, anchor_h = self.anchors[a]
-
-                        # bx = sigmoid(tx) + cx
-                        # by = sigmoid(ty) + cy
-                        # bw = pw * exp(tw)
-                        # bh = ph * exp(th)
-
-                        bx = (torch.sigmoid(tx).item() + j) / grid_w
-                        by = (torch.sigmoid(ty).item() + i) / grid_h
-
-                        bw = anchor_w * torch.exp(tw).item() / grid_w
-                        bh = anchor_h * torch.exp(th).item() / grid_h
-
-                        # 转换为像素坐标 (x1, y1, x2, y2)
-                        x1 = (bx - bw / 2) * self.img_size
-                        y1 = (by - bh / 2) * self.img_size
-                        x2 = (bx + bw / 2) * self.img_size
-                        y2 = (by + bh / 2) * self.img_size
-
-                        # 裁剪到图像范围
-                        x1 = max(0, min(self.img_size, x1))
-                        y1 = max(0, min(self.img_size, y1))
-                        x2 = max(0, min(self.img_size, x2))
-                        y2 = max(0, min(self.img_size, y2))
-
-                        # 添加检测结果
-                        image_predictions.append({
-                            'class_id': class_id,
-                            'confidence': final_conf,
-                            'bbox': (x1, y1, x2, y2)
-                        })
-
-            batch_predictions.append(image_predictions)
+            batch_predictions.append(image_preds)
 
         return batch_predictions
 
