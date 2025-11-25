@@ -56,6 +56,16 @@ class TrainingPlotter:
                 # 如果metrics中有该键则使用其值，否则用None填充，保证长度一致
                 self.history[key].append(metrics.get(key, None))
 
+    def _get_valid_data(self, key: str):
+        """获取有效的数据点（过滤掉None值）"""
+        epochs = []
+        values = []
+        for e, v in zip(self.history['epoch'], self.history[key]):
+            if v is not None:
+                epochs.append(e)
+                values.append(v)
+        return epochs, values
+
     def plot_training_curves(self):
         """绘制训练曲线"""
         if not self.history['epoch']:
@@ -64,14 +74,14 @@ class TrainingPlotter:
         fig, axes = plt.subplots(2, 2, figsize=(12, 10))
         fig.suptitle('Training Metrics', fontsize=16, fontweight='bold')
 
-        epochs = self.history['epoch']
-
         # 1. Loss曲线
         ax = axes[0, 0]
-        if self.history['train_loss']:
-            ax.plot(epochs, self.history['train_loss'], 'b-', label='Train Loss', linewidth=2)
-        if self.history['val_loss']:
-            ax.plot(epochs, self.history['val_loss'], 'r-', label='Val Loss', linewidth=2)
+        ep, vals = self._get_valid_data('train_loss')
+        if vals:
+            ax.plot(ep, vals, 'b-', label='Train Loss', linewidth=2)
+        ep, vals = self._get_valid_data('val_loss')
+        if vals:
+            ax.plot(ep, vals, 'r-', label='Val Loss', linewidth=2)
         ax.set_xlabel('Epoch')
         ax.set_ylabel('Loss')
         ax.set_title('Loss Curve')
@@ -80,10 +90,12 @@ class TrainingPlotter:
 
         # 2. Precision & Recall
         ax = axes[0, 1]
-        if self.history['precision']:
-            ax.plot(epochs, self.history['precision'], 'g-', label='Precision', linewidth=2)
-        if self.history['recall']:
-            ax.plot(epochs, self.history['recall'], 'b-', label='Recall', linewidth=2)
+        ep, vals = self._get_valid_data('precision')
+        if vals:
+            ax.plot(ep, vals, 'g-', label='Precision', linewidth=2)
+        ep, vals = self._get_valid_data('recall')
+        if vals:
+            ax.plot(ep, vals, 'b-', label='Recall', linewidth=2)
         ax.set_xlabel('Epoch')
         ax.set_ylabel('Score')
         ax.set_title('Precision & Recall')
@@ -93,10 +105,12 @@ class TrainingPlotter:
 
         # 3. mAP
         ax = axes[1, 0]
-        if self.history['mAP@0.5']:
-            ax.plot(epochs, self.history['mAP@0.5'], 'purple', label='mAP@0.5', linewidth=2)
-        if self.history['mAP@0.5:0.95']:
-            ax.plot(epochs, self.history['mAP@0.5:0.95'], 'orange', label='mAP@0.5:0.95', linewidth=2)
+        ep, vals = self._get_valid_data('mAP@0.5')
+        if vals:
+            ax.plot(ep, vals, 'purple', label='mAP@0.5', linewidth=2)
+        ep, vals = self._get_valid_data('mAP@0.5:0.95')
+        if vals:
+            ax.plot(ep, vals, 'orange', label='mAP@0.5:0.95', linewidth=2)
         ax.set_xlabel('Epoch')
         ax.set_ylabel('mAP')
         ax.set_title('Mean Average Precision')
@@ -106,8 +120,9 @@ class TrainingPlotter:
 
         # 4. F1 Score
         ax = axes[1, 1]
-        if self.history['f1']:
-            ax.plot(epochs, self.history['f1'], 'red', label='F1 Score', linewidth=2)
+        ep, vals = self._get_valid_data('f1')
+        if vals:
+            ax.plot(ep, vals, 'red', label='F1 Score', linewidth=2)
         ax.set_xlabel('Epoch')
         ax.set_ylabel('F1 Score')
         ax.set_title('F1 Score')

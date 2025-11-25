@@ -621,6 +621,23 @@ def main():
                 )
                 if should_stop:
                     print(colorstr('red', 'bold', '\n⚠ Early stopping triggered!'))
+                    # 早停时计算完整指标
+                    print(colorstr('cyan', 'Computing final metrics before stopping...'))
+                    val_metrics, _, _, _ = validate(
+                        val_model,
+                        val_loader,
+                        criterion,
+                        device,
+                        conf_thres=args.conf_thres,
+                        iou_thres=args.iou_thres,
+                        nc=train_dataset.num_classes,
+                        compute_metrics=True,
+                        save_dir=save_dir,
+                        plot_samples=args.plot_samples
+                    )
+                    # 更新plotter以包含完整指标
+                    all_metrics = {'train_loss': train_loss, **val_metrics}
+                    plotter.update(epoch, all_metrics)
                     break
 
         # 合并指标
