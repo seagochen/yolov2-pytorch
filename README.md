@@ -1,56 +1,70 @@
 # YOLOv2-PyTorch
 
-> **A clean, modular, and production-ready implementation of YOLOv2 in PyTorch**
+<div align="center">
+
+**A clean, modular, and production-ready implementation of YOLOv2 object detection in PyTorch**
 
 [![Python 3.7+](https://img.shields.io/badge/python-3.7+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 1.10+](https://img.shields.io/badge/pytorch-1.10+-red.svg)](https://pytorch.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+</div>
+
+> **About**: This is a comprehensive implementation of YOLOv2 (YOLO9000) featuring the Darknet-19 backbone, anchor box-based detection, and modern training infrastructure. Built with clean, modular code and complete evaluation tools for research and production use.
+
 ---
 
 ## 🎯 Features
 
-### ✨ **Modern & Clean**
-- 🏗️ **Modular Architecture**: Clean separation of models, data, and utils
-- 🔄 **Latest PyTorch API**: Uses modern PyTorch features and best practices
-- 📦 **Easy Installation**: Standard Python package with `setup.py`
-- 📝 **Type Hints**: Full type annotations for better IDE support
+### ✨ **Modern & Clean Architecture**
+- 🏗️ **Modular Design**: Clean separation of concerns (models, data, utils)
+- 🔄 **Modern PyTorch**: Latest API with best practices and optimizations
+- 📦 **Easy Installation**: Standard Python package with dependency management
+- 📝 **Type Hints**: Full type annotations for better IDE support and code quality
+- 🧪 **Testable**: Individual component testing support
 
-### 🚀 **Performance**
-- ⚡ **Darknet-19 Backbone**: Efficient 19-layer feature extractor
-- 🎯 **Anchor Boxes**: 5 carefully tuned anchors for multi-scale detection
-- 🔗 **Passthrough Layer**: Fine-grained features for small object detection
-- 💯 **Batch Normalization**: All conv layers use BN for stable training
+### 🚀 **State-of-the-Art Detection**
+- ⚡ **Darknet-19 Backbone**: Efficient 19-layer convolutional feature extractor (~50M params)
+- 🎯 **Anchor Boxes**: 5 K-means clustered anchors for robust multi-scale detection
+- 🔗 **Passthrough Layer**: Fine-grained feature fusion for improved small object detection
+- 💯 **Batch Normalization**: All convolutional layers use BN for training stability
+- 🎪 **Multi-Scale Training**: Support for various input resolutions (320-640px)
 
-### 🛠️ **Production Ready**
-- 📊 **Ultralytics Format**: Full compatibility with YAML+TXT dataset format
-- 🔧 **Configurable**: Easy to customize via config files or CLI arguments
-- 📈 **Training Tools**: Built-in training, validation, and detection scripts
-- 🎨 **Visualization**: Real-time detection visualization and result saving
+### 🛠️ **Production-Ready Training**
+- 📊 **Ultralytics Compatibility**: Drop-in support for YAML+TXT dataset format (Roboflow, COCO, etc.)
+- 🔧 **Highly Configurable**: Extensive CLI arguments and YAML-based configuration
+- 📈 **Complete Evaluation Suite**: mAP@0.5, mAP@0.5:0.95, Precision, Recall, F1-Score
+- 🎨 **Rich Visualization**: Training curves, confusion matrices, PR curves, and prediction samples
+- 🔄 **Training Stability**: Gradient clipping, EMA-smoothed validation, AdamW optimizer with cosine annealing
+- 💾 **Smart Checkpointing**: Auto-save best models based on mAP or validation loss
+- 📉 **Real-Time Monitoring**: Live progress bars with detailed loss component tracking
 
 ---
 
 ## 📁 Project Structure
 
 ```
-yolov2-pytorch/
+./
 ├── yolov2/                      # Core package
 │   ├── models/                  # Model definitions
 │   │   ├── darknet.py          # Darknet-19 backbone
 │   │   ├── yolov2.py           # YOLOv2 detection network
 │   │   └── layers.py           # Custom layers (ConvBNAct, SpaceToDepth)
 │   ├── data/                    # Data processing
-│   │   └── datasets.py         # COCODetectionDataset
+│   │   └── datasets.py         # COCODetectionDataset (Ultralytics format)
 │   └── utils/                   # Utility functions
 │       ├── loss.py             # YOLOv2 loss function
-│       └── general.py          # NMS, IoU, etc.
+│       ├── general.py          # NMS, IoU, etc.
+│       ├── metrics.py          # Evaluation metrics (mAP, Precision, Recall)
+│       └── plots.py            # Visualization tools (PR curves, confusion matrix)
 ├── scripts/                     # Training & inference scripts
-│   ├── train.py                # Training script
-│   └── detect.py               # Detection script
-├── configs/                     # Configuration files
-│   └── coco.yaml               # COCO dataset config
-├── data/                        # Dataset directory
-│   └── coco.yaml               # Dataset YAML file
+│   ├── train.py                # Training script with full evaluation
+│   └── detect.py               # Detection/inference script
+├── runs/                        # Training outputs
+│   └── train/                  # Training experiments
+│       └── exp/                # Experiment results
+│           ├── weights/        # Model checkpoints (best.pt, last.pt)
+│           └── *.png           # Training plots and visualizations
 ├── requirements.txt             # Python dependencies
 ├── setup.py                     # Package setup
 └── README.md                    # This file
@@ -64,21 +78,31 @@ yolov2-pytorch/
 
 ```bash
 # Clone repository
-git clone https://github.com/your-repo/yolov2-pytorch.git
-cd yolov2-pytorch
+git clone <your-repo-url>
+cd YOLOv1
 
 # Install dependencies
 pip install -r requirements.txt
 
-# Or install as package
+# Install as editable package (recommended for development)
 pip install -e .
 ```
+
+**Requirements:**
+- Python >= 3.7
+- PyTorch >= 1.10.0
+- torchvision >= 0.11.0
+- NumPy >= 1.19.0
+- PyYAML >= 5.4.0
+- tqdm >= 4.60.0
+- matplotlib >= 3.3.0
+- CUDA (recommended for GPU training)
 
 ### Training
 
 ```bash
 python scripts/train.py \
-    --data data/coco.yaml \
+    --data /path/to/your/dataset.yaml \
     --epochs 100 \
     --batch-size 16 \
     --img-size 640 \
@@ -87,16 +111,31 @@ python scripts/train.py \
 
 **Training Arguments:**
 ```
---data          Dataset YAML config path
+--data          Dataset YAML config path (required)
 --epochs        Number of training epochs (default: 100)
 --batch-size    Batch size (default: 16)
 --img-size      Input image size (default: 640)
---lr            Initial learning rate (default: 1e-3)
+--lr            Initial learning rate (default: 5e-4)
+--weight-decay  Optimizer weight decay (default: 5e-4)
 --device        CUDA device, i.e. 0 or 0,1,2,3 or cpu
+--workers       Number of data loading workers (default: 4)
 --project       Save directory (default: runs/train)
 --name          Experiment name (default: exp)
 --resume        Resume from checkpoint
+--save-period   Save checkpoint every N epochs (default: 10)
+--grad-clip     Gradient clipping threshold (default: 10.0)
+--warmup-epochs Warmup epochs before cosine annealing (default: 3)
 ```
+
+**Training Outputs:**
+The training script generates comprehensive outputs in `runs/train/exp/`:
+- `weights/best.pt` - Best model checkpoint (highest mAP)
+- `weights/last.pt` - Last epoch checkpoint
+- `results.png` - Training metrics curves (loss, mAP, precision, recall)
+- `PR_curve.png` - Precision-Recall curve
+- `confusion_matrix.png` - Confusion matrix heatmap
+- `labels.png` - Label distribution visualization
+- `val_batch*.jpg` - Validation predictions samples
 
 ### Detection
 
@@ -118,6 +157,26 @@ python scripts/detect.py \
 --save-img      Save detection results
 --view-img      Display results
 ```
+
+### Example Training Output
+
+During training, you'll see real-time metrics:
+
+```
+Epoch 1/100:  100%|████████| 1000/1000 [05:23<00:00,  3.09it/s]
+Train - Loss: 12.345, Box: 4.123, Obj: 3.456, Cls: 4.766
+
+Validating:  100%|████████| 200/200 [00:45<00:00,  4.41it/s]
+Val - mAP@0.5: 0.523, mAP@0.5:0.95: 0.312, P: 0.645, R: 0.589
+
+✓ Best mAP improved from 0.000 to 0.523, saving best.pt...
+```
+
+Training automatically generates visualization plots showing:
+- Loss curves (box, objectness, class losses)
+- mAP progression over epochs
+- Precision and Recall curves
+- Confusion matrix for error analysis
 
 ---
 
@@ -230,25 +289,21 @@ anchors = [
 
 ### Custom Dataset
 
-1. **Prepare data** in Ultralytics format
-2. **Create YAML** config file
+1. **Prepare data** in Ultralytics format (see Dataset Format section)
+2. **Create YAML** config file with paths and class names
 3. **Train**:
    ```bash
-   python scripts/train.py --data path/to/custom.yaml
+   python scripts/train.py --data path/to/custom.yaml --epochs 100
    ```
 
-### Custom Anchors
+### Evaluation Metrics
 
-Generate anchors for your dataset using K-means:
-```python
-from yolov2.utils.anchors import kmeans_anchors
-
-anchors = kmeans_anchors(
-    dataset_yaml='path/to/dataset.yaml',
-    n_clusters=5,
-    img_size=640
-)
-```
+The training script automatically computes:
+- **mAP@0.5**: Mean Average Precision at IoU threshold 0.5
+- **mAP@0.5:0.95**: COCO-style mAP across IoU thresholds 0.5-0.95
+- **Precision & Recall**: Per-class and overall metrics
+- **Confusion Matrix**: Visual analysis of predictions vs ground truth
+- **PR Curves**: Precision-Recall curves for each class
 
 ### Export Model
 
@@ -311,27 +366,24 @@ torch.onnx.export(
 
 ## 🛠️ Development
 
-### Testing
+### Package Structure
+
+The project is organized as a Python package:
+- `yolov2/models/`: Neural network architectures
+- `yolov2/data/`: Dataset loading and preprocessing
+- `yolov2/utils/`: Loss functions, metrics, plotting, and utilities
+
+### Testing Individual Components
 
 ```bash
-# Test models
+# Test model architecture
 python -m yolov2.models.yolov2
 
-# Test dataset
+# Test dataset loading
 python -m yolov2.data.datasets
 
-# Test loss
+# Test loss computation
 python -m yolov2.utils.loss
-```
-
-### Code Style
-
-```bash
-# Format code
-black .
-
-# Lint
-flake8 yolov2/
 ```
 
 ---
@@ -351,9 +403,43 @@ flake8 yolov2/
 
 ---
 
+## 📝 Recent Updates
+
+### v1.2 - Training Stability Improvements (2025-01)
+- ✅ **Gradient Clipping**: Prevent gradient explosion during training
+- ✅ **AdamW Optimizer**: Improved weight decay regularization
+- ✅ **Cosine Annealing**: Smooth learning rate scheduling with warmup
+- ✅ **BCEWithLogitsLoss**: Better numerical stability in loss computation
+- ✅ **EMA Validation Loss**: Robust model selection via exponential moving average
+- ✅ **Memory Optimization**: torch.no_grad() wrapper for validation
+- ✅ **Roboflow Support**: Fixed dataset path handling for Roboflow exports
+- ✅ **Smart Validation**: Full metrics only on final epoch to save time
+
+### v1.1 - Comprehensive Training Evaluation System (2024-11)
+- ✅ Full evaluation metrics (mAP@0.5, mAP@0.5:0.95, Precision, Recall)
+- ✅ Ultralytics-style training visualization and reporting
+- ✅ Confusion matrix and PR curve plotting
+- ✅ Per-class and overall detection metrics tracking
+- ✅ Organized training output with automatic result saving
+
+### v1.0 - Production-Ready YOLOv2 (2024-11)
+- ✅ Complete YOLOv2 implementation with Darknet-19 backbone
+- ✅ Anchor box-based multi-scale detection system
+- ✅ Ultralytics YAML+TXT dataset format support
+- ✅ Modular architecture with clean, maintainable code
+
+---
+
 ## 🤝 Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Contributions are welcome! Here's how you can help:
+
+1. **Report Bugs**: Open an issue with detailed reproduction steps
+2. **Suggest Features**: Share your ideas for improvements
+3. **Submit PRs**: Fix bugs, add features, or improve documentation
+4. **Share Results**: Post your training results and model performance
+
+Please ensure your code follows the existing style and includes appropriate tests.
 
 ---
 
@@ -365,24 +451,15 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🙏 Acknowledgments
 
-- Joseph Redmon for the original YOLO series
-- Ultralytics for the standardized dataset format
-- PyTorch team for the excellent framework
-
----
-
-## 📞 Contact
-
-For questions or issues, please:
-- Open an issue on [GitHub](https://github.com/your-repo/yolov2-pytorch/issues)
-- Contact: your-email@example.com
+- **Joseph Redmon** and **Ali Farhadi** for the original YOLO and YOLOv2 papers
+- **Ultralytics** for the standardized dataset format and training methodology
+- **PyTorch Team** for the excellent deep learning framework
+- **Darknet** project for the original implementation reference
 
 ---
 
 <div align="center">
 
 **⭐ If you find this project useful, please consider giving it a star! ⭐**
-
-Made with ❤️ by the YOLOv2-PyTorch team
 
 </div>
