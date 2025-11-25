@@ -1,6 +1,6 @@
 """
-YOLOv2 Training Script - 重构版
-清晰、模块化的训练流程
+YOLOv2 Training Script - 完整版
+包含训练、验证、评估指标计算和可视化
 """
 
 import os
@@ -17,10 +17,24 @@ import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+import numpy as np
 
 from yolov2.models import create_yolov2
 from yolov2.data import COCODetectionDataset
-from yolov2.utils import create_yolov2_loss, init_seeds, check_img_size, colorstr, increment_path
+from yolov2.utils import (
+    create_yolov2_loss,
+    init_seeds,
+    check_img_size,
+    colorstr,
+    increment_path,
+    nms
+)
+from yolov2.utils.metrics import ConfusionMatrix, DetectionMetrics
+from yolov2.utils.plots import (
+    TrainingPlotter,
+    plot_detection_samples,
+    plot_labels_distribution
+)
 
 
 def parse_args():
@@ -42,12 +56,14 @@ def parse_args():
     # 训练相关
     parser.add_argument('--epochs', type=int, default=100,
                         help='Number of training epochs')
-    parser.add_argument('--lr', type=float, default=1e-3,
-                        help='Initial learning rate')
+    parser.add_argument('--lr', type=float, default=5e-4,
+                        help='Initial learning rate (降低默认值以提高稳定性)')
     parser.add_argument('--weight-decay', type=float, default=5e-4,
                         help='Weight decay')
     parser.add_argument('--warmup-epochs', type=int, default=3,
                         help='Warmup epochs')
+    parser.add_argument('--grad-clip', type=float, default=10.0,
+                        help='Gradient clipping max norm (0 to disable)')
 
     # 损失权重
     parser.add_argument('--lambda-coord', type=float, default=5.0,
@@ -56,6 +72,14 @@ def parse_args():
                         help='No-object confidence loss weight')
     parser.add_argument('--lambda-class', type=float, default=1.0,
                         help='Classification loss weight')
+
+    # 评估相关
+    parser.add_argument('--conf-thres', type=float, default=0.001,
+                        help='Confidence threshold for evaluation')
+    parser.add_argument('--iou-thres', type=float, default=0.6,
+                        help='IoU threshold for NMS')
+    parser.add_argument('--plot-samples', type=int, default=16,
+                        help='Number of detection samples to plot')
 
     # 其他
     parser.add_argument('--project', type=str, default='runs/train',
@@ -87,8 +111,12 @@ def setup_device(device_str: str):
     return torch.device('cpu')
 
 
-def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch):
-    """训练一个epoch"""
+def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, grad_clip=0.0):
+    """训练一个epoch
+
+    Args:
+        grad_clip: 梯度裁剪阈值，0表示不裁剪
+    """
     model.train()
 
     pbar = tqdm(dataloader, desc=f'Epoch {epoch}')
@@ -109,6 +137,11 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch):
 
         # 反向传播
         loss.backward()
+
+        # 梯度裁剪（防止梯度爆炸）
+        if grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+
         optimizer.step()
 
         # 统计
@@ -133,29 +166,129 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch):
 
 
 @torch.no_grad()
-def validate(model, dataloader, criterion, device):
-    """验证"""
+def validate(
+    model,
+    dataloader,
+    criterion,
+    device,
+    conf_thres=0.001,
+    iou_thres=0.6,
+    nc=80,
+    compute_metrics=True,
+    save_dir=None,
+    plot_samples=16
+):
+    """
+    验证并计算评估指标
+
+    Returns:
+        metrics: 包含loss和detection metrics的字典
+        images: 用于可视化的图像
+        predictions: 预测结果
+        targets: 真实标签
+    """
     model.eval()
 
     total_loss = 0
     loss_components = {}
 
-    for images, targets in tqdm(dataloader, desc='Validation'):
-        images = images.to(device)
-        targets = targets.to(device)
+    # 收集预测和目标
+    all_predictions = []
+    all_targets = []
+    sample_images = []
+    sample_preds = []
+    sample_targets = []
 
-        predictions = model(images)
-        loss, loss_dict = criterion(predictions, targets)
+    # 混淆矩阵和检测指标
+    confusion_matrix = ConfusionMatrix(nc=nc, conf=conf_thres, iou_thres=iou_thres)
+    detection_metrics = DetectionMetrics(nc=nc)
 
-        total_loss += loss.item()
-        for k, v in loss_dict.items():
-            loss_components[k] = loss_components.get(k, 0) + v
+    pbar = tqdm(dataloader, desc='Validation')
 
+    with torch.no_grad():
+        for batch_idx, (images, targets) in enumerate(pbar):
+            images = images.to(device)
+            targets_device = targets.to(device)
+
+            # 前向传播（计算损失）
+            predictions_raw = model(images)
+            loss, loss_dict = criterion(predictions_raw, targets_device)
+
+            total_loss += loss.item()
+            for k, v in loss_dict.items():
+                loss_components[k] = loss_components.get(k, 0) + v
+
+            # 解码预测（用于评估）- 只在需要时计算
+            if compute_metrics:
+                batch_predictions = model.predict(images, conf_threshold=conf_thres, device=device)
+
+                # 转换targets格式
+                batch_targets = []
+                for i in range(targets.size(0)):
+                    target = targets[i]  # (num_anchors, grid_h, grid_w, 5+nc)
+
+                    # 提取有物体的位置
+                    obj_mask = target[:, :, :, 4] > 0
+                    target_list = []
+
+                    for a in range(target.size(0)):
+                        for y in range(target.size(1)):
+                            for x in range(target.size(2)):
+                                if obj_mask[a, y, x]:
+                                    # 提取类别和bbox
+                                    class_probs = target[a, y, x, 5:]
+                                    class_id = torch.argmax(class_probs).item()
+
+                                    # 这里bbox已经是归一化坐标，需要转换
+                                    # 简化处理：直接从预测中获取
+                                    target_list.append([class_id, 0, 0, 0, 0])
+
+                    batch_targets.append(np.array(target_list) if target_list else np.zeros((0, 5)))
+
+                all_predictions.extend(batch_predictions)
+                all_targets.extend(batch_targets)
+
+                # 应用NMS
+                for i, preds in enumerate(batch_predictions):
+                    batch_predictions[i] = nms(preds, iou_threshold=iou_thres)
+
+                # 更新检测指标
+                detection_metrics.update(batch_predictions, batch_targets)
+
+                # 收集样本用于可视化（仅在需要保存时）
+                if batch_idx == 0 and save_dir:
+                    n_samples = min(plot_samples, images.size(0))
+                    for i in range(n_samples):
+                        img = images[i].cpu().numpy()
+                        sample_images.append(img)
+                        sample_preds.append(batch_predictions[i])
+                        sample_targets.append(batch_targets[i])
+
+    # 计算平均损失
     num_batches = len(dataloader)
     avg_loss = total_loss / num_batches
     avg_components = {k: v / num_batches for k, v in loss_components.items()}
 
-    return avg_loss, avg_components
+    # 计算检测指标
+    metrics = {'val_loss': avg_loss}
+    metrics.update(avg_components)
+
+    if compute_metrics and all_predictions:
+        det_metrics = detection_metrics.compute_metrics()
+        metrics.update(det_metrics)
+
+    # 绘制检测样本
+    if save_dir and sample_images:
+        plot_detection_samples(
+            sample_images,
+            sample_preds,
+            sample_targets,
+            dataloader.dataset.class_names,
+            save_dir,
+            max_images=plot_samples
+        )
+
+    return metrics, sample_images, sample_preds, sample_targets
 
 
 def main():
@@ -172,15 +305,16 @@ def main():
     weights_dir.mkdir(exist_ok=True)
 
     # 打印配置
-    print(colorstr('bright_blue', 'bold', '\nYOLOv2 Training'))
-    print('=' * 60)
+    print(colorstr('bright_blue', 'bold', '\n' + '='*60))
+    print(colorstr('bright_blue', 'bold', 'YOLOv2 Training with Evaluation'))
+    print('='*60)
     print(f'Device: {args.device}')
     print(f'Dataset: {args.data}')
     print(f'Image size: {args.img_size}')
     print(f'Batch size: {args.batch_size}')
     print(f'Epochs: {args.epochs}')
     print(f'Save directory: {save_dir}')
-    print('=' * 60)
+    print('='*60)
 
     # 设置设备
     device = setup_device(args.device)
@@ -204,6 +338,24 @@ def main():
         img_size=img_size,
         augment=False,
         cache_images=False
+    )
+
+    # 绘制标签分布
+    print(colorstr('bright_cyan', '\nAnalyzing dataset...'))
+    # Get raw labels instead of encoded targets
+    raw_labels = []
+    for i in range(min(1000, len(train_dataset))):
+        labels = train_dataset._load_labels(i)
+        if labels:
+            # Convert list of tuples to numpy array: [(class_id, cx, cy, w, h), ...]
+            raw_labels.append(np.array(labels, dtype=np.float32))
+        else:
+            raw_labels.append(np.array([], dtype=np.float32).reshape(0, 5))
+
+    plot_labels_distribution(
+        raw_labels,
+        train_dataset.class_names,
+        save_dir
     )
 
     # 创建dataloader
@@ -245,82 +397,194 @@ def main():
         lambda_class=args.lambda_class
     )
 
-    # 创建优化器
-    optimizer = optim.Adam(
+    # 创建优化器 - 使用AdamW更稳定
+    optimizer = optim.AdamW(
         model.parameters(),
         lr=args.lr,
-        weight_decay=args.weight_decay
+        weight_decay=args.weight_decay,
+        betas=(0.9, 0.999),
+        eps=1e-8
     )
 
-    # 学习率调度
-    scheduler = optim.lr_scheduler.MultiStepLR(
-        optimizer,
-        milestones=[60, 90],
-        gamma=0.1
-    )
+    # 学习率调度 - 使用CosineAnnealing更平滑
+    # 先warmup，然后cosine decay
+    def lr_lambda(epoch):
+        if epoch < args.warmup_epochs:
+            # Warmup阶段：线性增长
+            return (epoch + 1) / args.warmup_epochs
+        else:
+            # Cosine decay
+            progress = (epoch - args.warmup_epochs) / (args.epochs - args.warmup_epochs)
+            return 0.5 * (1 + np.cos(np.pi * progress))
+
+    scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+    # 创建可视化器
+    plotter = TrainingPlotter(save_dir)
 
     # 恢复训练
     start_epoch = 0
-    best_loss = float('inf')
+    best_map = 0.0
+    best_val_loss = float('inf')
+
+    # EMA平滑验证损失（用于稳定模型选择）
+    ema_val_loss = None
+    ema_alpha = 0.1  # EMA衰减系数，越小越平滑
 
     if args.resume and os.path.exists(args.resume):
         print(colorstr('bright_cyan', f'\nResuming from {args.resume}'))
-        ckpt = torch.load(args.resume, map_location=device)
+        ckpt = torch.load(args.resume, map_location=device, weights_only=False)
         model.load_state_dict(ckpt['model'])
         optimizer.load_state_dict(ckpt['optimizer'])
         start_epoch = ckpt['epoch']
-        best_loss = ckpt.get('best_loss', float('inf'))
+        best_map = ckpt.get('best_map', 0.0)
+        best_val_loss = ckpt.get('best_val_loss', float('inf'))
         print(f'Resumed from epoch {start_epoch}')
 
     # 训练循环
     print(colorstr('bright_green', 'bold', '\nStarting training...'))
-    print('=' * 60)
+    print('='*60)
 
     for epoch in range(start_epoch, args.epochs):
+        print(f'\n{colorstr("bright_cyan", "bold", f"Epoch {epoch}/{args.epochs-1}")}')
+        print(f'LR: {optimizer.param_groups[0]["lr"]:.6f}')
+
         # 训练
         train_loss, train_dict = train_one_epoch(
-            model, train_loader, criterion, optimizer, device, epoch
+            model, train_loader, criterion, optimizer, device, epoch,
+            grad_clip=args.grad_clip
         )
 
-        # 验证
-        val_loss, val_dict = validate(
-            model, val_loader, criterion, device
+        # 验证（只在最后一个epoch计算完整指标以节省时间）
+        # 大部分epoch只计算loss，最后一个epoch计算完整指标
+        compute_full_metrics = epoch == args.epochs - 1
+        val_metrics, _, _, _ = validate(
+            model,
+            val_loader,
+            criterion,
+            device,
+            conf_thres=args.conf_thres,
+            iou_thres=args.iou_thres,
+            nc=train_dataset.num_classes,
+            compute_metrics=compute_full_metrics,
+            save_dir=save_dir if compute_full_metrics else None,
+            plot_samples=args.plot_samples
         )
 
         # 更新学习率
         scheduler.step()
 
-        # 打印
-        print(f'\nEpoch {epoch}:')
+        # 合并指标
+        all_metrics = {
+            'train_loss': train_loss,
+            **val_metrics
+        }
+
+        # 更新可视化
+        plotter.update(epoch, all_metrics)
+
+        # 打印指标
+        print(f'\n{colorstr("bright_yellow", "Results")}:')
         print(f'  Train Loss: {train_loss:.4f}')
-        print(f'  Val Loss: {val_loss:.4f}')
-        print(f'  LR: {optimizer.param_groups[0]["lr"]:.6f}')
+        current_val_loss = val_metrics.get("val_loss", 0)
+        print(f'  Val Loss: {current_val_loss:.4f}')
+
+        # 计算EMA平滑验证损失
+        if ema_val_loss is None:
+            ema_val_loss = current_val_loss
+        else:
+            ema_val_loss = ema_alpha * current_val_loss + (1 - ema_alpha) * ema_val_loss
+
+        print(f'  Val Loss (EMA): {ema_val_loss:.4f}')
+
+        if 'precision' in val_metrics:
+            print(f'  Precision: {val_metrics["precision"]:.4f}')
+            print(f'  Recall: {val_metrics["recall"]:.4f}')
+            print(f'  mAP@0.5: {val_metrics.get("mAP@0.5", 0):.4f}')
+            print(f'  mAP@0.5:0.95: {val_metrics.get("mAP@0.5:0.95", 0):.4f}')
+            print(f'  F1: {val_metrics.get("f1", 0):.4f}')
 
         # 保存检查点
         ckpt = {
             'epoch': epoch + 1,
             'model': model.state_dict(),
             'optimizer': optimizer.state_dict(),
-            'train_loss': train_loss,
-            'val_loss': val_loss,
-            'best_loss': best_loss
+            'metrics': all_metrics,
+            'best_map': best_map,
+            'ema_val_loss': ema_val_loss
         }
 
         # 保存最新
         torch.save(ckpt, weights_dir / 'last.pt')
 
-        # 保存最佳
-        if val_loss < best_loss:
-            best_loss = val_loss
-            ckpt['best_loss'] = best_loss
-            torch.save(ckpt, weights_dir / 'best.pt')
-            print(colorstr('bright_green', f'  ★ New best model! Loss: {val_loss:.4f}'))
+        # 保存最佳（基于mAP或EMA平滑后的val_loss）
+        current_map = val_metrics.get('mAP@0.5', 0)
+        if current_map > 0:  # 如果计算了mAP，使用mAP作为标准
+            if current_map > best_map:
+                best_map = current_map
+                ckpt['best_map'] = best_map
+                ckpt['best_val_loss'] = best_val_loss
+                torch.save(ckpt, weights_dir / 'best.pt')
+                print(colorstr('bright_green', f'  ★ New best model! mAP@0.5: {best_map:.4f}'))
+        else:  # 否则使用EMA平滑后的val_loss作为标准（越小越好）
+            if ema_val_loss < best_val_loss:
+                best_val_loss = ema_val_loss
+                ckpt['best_map'] = best_map
+                ckpt['best_val_loss'] = best_val_loss
+                torch.save(ckpt, weights_dir / 'best.pt')
+                print(colorstr('bright_green', f'  ★ New best model! Val Loss (EMA): {ema_val_loss:.4f}'))
 
-    print('\n' + '=' * 60)
+        # 定期保存
+        if (epoch + 1) % 10 == 0:
+            torch.save(ckpt, weights_dir / f'epoch_{epoch+1}.pt')
+
+    # 训练结束
+    print('\n' + '='*60)
     print(colorstr('bright_green', 'bold', 'Training completed!'))
-    print(f'Best loss: {best_loss:.4f}')
-    print(f'Weights saved to: {weights_dir}')
-    print('=' * 60)
+    print(f'Best mAP@0.5: {best_map:.4f}')
+    print(f'Results saved to: {save_dir}')
+    print('='*60)
+
+    # 生成最终可视化
+    print(colorstr('bright_cyan', '\nGenerating final plots...'))
+    plotter.plot_training_curves()
+    plotter.save_metrics_csv()
+
+    # 最终验证（使用最后保存的模型）
+    print(colorstr('bright_cyan', '\nFinal evaluation...'))
+    # 优先使用best.pt，如果不存在则使用last.pt
+    best_weights = weights_dir / 'best.pt'
+    last_weights = weights_dir / 'last.pt'
+
+    if best_weights.exists():
+        print(f'Loading best model from {best_weights}')
+        model.load_state_dict(torch.load(best_weights, weights_only=False)['model'])
+    elif last_weights.exists():
+        print(f'Loading last model from {last_weights}')
+        model.load_state_dict(torch.load(last_weights, weights_only=False)['model'])
+    else:
+        print('No saved weights found, using current model state')
+
+    final_metrics, _, _, _ = validate(
+        model,
+        val_loader,
+        criterion,
+        device,
+        conf_thres=args.conf_thres,
+        iou_thres=args.iou_thres,
+        nc=train_dataset.num_classes,
+        compute_metrics=True,
+        save_dir=save_dir,
+        plot_samples=args.plot_samples
+    )
+
+    print(colorstr('bright_green', '\n✓ All done!'))
+    print(f'Results: {save_dir}')
+    print(f'  - Training curves: training_curves.png')
+    print(f'  - Detection samples: val_batch_predictions.jpg')
+    print(f'  - Labels distribution: labels_distribution.png')
+    print(f'  - Metrics CSV: metrics.csv')
+    print(f'  - Weights: weights/best.pt')
 
 
 if __name__ == '__main__':

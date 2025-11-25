@@ -125,17 +125,34 @@ class COCODetectionDataset(Dataset):
         """
         解析图像和标签目录路径
 
+        兼容Ultralytics/Roboflow格式：
+        Roboflow导出的YAML使用 ../train/images 格式，意思是去掉../前缀
+        实际上这些目录就在YAML文件的同级目录下
+
         Returns:
             img_dir: 图像目录
             label_dir: 标签目录
         """
         # 获取图像目录（从YAML或默认值）
         img_subpath = self.config.get(split, f'images/{split}')
-        img_dir = self.dataset_root / img_subpath
+
+        # Roboflow格式处理：../train/images 实际指向 train/images
+        # 这是因为Roboflow期望 ../something 等价于 something（相对于YAML目录）
+        if str(img_subpath).startswith('../'):
+            # 移除 ../ 前缀，实际路径相对于YAML所在目录
+            img_subpath_clean = str(img_subpath)[3:]  # 移除 '../'
+            img_dir = self.dataset_root / img_subpath_clean
+        else:
+            # 标准路径，相对于dataset_root
+            img_dir = self.dataset_root / img_subpath
 
         # 标签目录：将'images'替换为'labels'
         label_subpath = img_subpath.replace('images', 'labels')
-        label_dir = self.dataset_root / label_subpath
+        if str(label_subpath).startswith('../'):
+            label_subpath_clean = str(label_subpath)[3:]  # 移除 '../'
+            label_dir = self.dataset_root / label_subpath_clean
+        else:
+            label_dir = self.dataset_root / label_subpath
 
         # 验证目录存在
         if not img_dir.exists():
@@ -320,9 +337,12 @@ class COCODetectionDataset(Dataset):
             ty = cy * self.grid_size - grid_y
 
             # 计算尺度
+            # 注意：anchor尺寸是网格单位，需要将归一化的w/h也转换为网格单位
             anchor_w, anchor_h = self.anchors[best_anchor]
-            tw = np.log(w / (anchor_w + 1e-16) + 1e-16)
-            th = np.log(h / (anchor_h + 1e-16) + 1e-16)
+            w_grid = w * self.grid_size  # 归一化 -> 网格单位
+            h_grid = h * self.grid_size
+            tw = np.log(w_grid / (anchor_w + 1e-16) + 1e-16)
+            th = np.log(h_grid / (anchor_h + 1e-16) + 1e-16)
 
             # 填充
             target[best_anchor, grid_y, grid_x, 0] = tx
@@ -337,17 +357,25 @@ class COCODetectionDataset(Dataset):
         return torch.from_numpy(target)
 
     def _find_best_anchor(self, w: float, h: float) -> int:
-        """找到最佳匹配的anchor"""
+        """找到最佳匹配的anchor
+
+        Args:
+            w, h: 归一化的宽高 (0~1)
+        """
         best_iou = 0
         best_anchor = 0
 
+        # 将归一化坐标转换为网格单位，与anchor尺寸统一
+        w_grid = w * self.grid_size
+        h_grid = h * self.grid_size
+
         for i, (anchor_w, anchor_h) in enumerate(self.anchors):
             # 计算IoU（中心对齐）
-            inter_w = min(w, anchor_w)
-            inter_h = min(h, anchor_h)
+            inter_w = min(w_grid, anchor_w)
+            inter_h = min(h_grid, anchor_h)
             inter_area = inter_w * inter_h
 
-            union_area = w * h + anchor_w * anchor_h - inter_area
+            union_area = w_grid * h_grid + anchor_w * anchor_h - inter_area
             iou = inter_area / (union_area + 1e-16)
 
             if iou > best_iou:
