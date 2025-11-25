@@ -147,17 +147,17 @@ python scripts/train.py \
 --ema                 Use Exponential Moving Average for model weights
 --ema-decay           EMA decay factor (default: 0.9999)
 --label-smoothing     Label smoothing factor (default: 0.0)
+--eval-interval       Compute full metrics every N epochs (default: 5, 0=only last)
 ```
 
 **Training Outputs:**
 The training script generates comprehensive outputs in `runs/train/exp/`:
 - `weights/best.pt` - Best model checkpoint (highest mAP)
 - `weights/last.pt` - Last epoch checkpoint
-- `results.png` - Training metrics curves (loss, mAP, precision, recall)
-- `PR_curve.png` - Precision-Recall curve
-- `confusion_matrix.png` - Confusion matrix heatmap
-- `labels.png` - Label distribution visualization
-- `val_batch*.jpg` - Validation predictions samples
+- `training_curves.png` - Training metrics curves (loss, mAP, precision, recall)
+- `metrics.csv` - Per-epoch metrics data (updated in real-time)
+- `labels_distribution.png` - Label distribution visualization
+- `val_batch_predictions.jpg` - Validation predictions with color-coded classes
 
 ### Detection
 
@@ -463,6 +463,13 @@ python -m yolov2.utils.loss
 ---
 
 ## 📝 Recent Updates
+
+### v1.4 - Metrics & Visualization Improvements (2025-11)
+- ✅ **Periodic Metrics Evaluation**: New `--eval-interval` to compute mAP every N epochs
+- ✅ **Real-time CSV Export**: Metrics saved after each epoch, preventing data loss on interruption
+- ✅ **Color-coded Visualization**: Different colors for each class in detection plots
+- ✅ **Fixed mAP Calculation**: Correct target bbox decoding for accurate metrics
+- ✅ **Improved Early Stopping**: Compute full metrics before stopping for final evaluation
 
 ### v1.3 - Advanced Fine-tuning Suite (2025-11)
 - ✅ **ReduceLROnPlateau**: Auto-reduce LR when val loss stops improving (patience=5)
