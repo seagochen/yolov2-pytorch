@@ -102,6 +102,8 @@ def parse_args():
                         help='EMA decay factor')
 
     # 评估相关
+    parser.add_argument('--eval-interval', type=int, default=5,
+                        help='Compute full metrics every N epochs (0=only last epoch)')
     parser.add_argument('--conf-thres', type=float, default=0.001,
                         help='Confidence threshold for evaluation')
     parser.add_argument('--iou-thres', type=float, default=0.6,
@@ -614,9 +616,11 @@ def main():
             ema=ema
         )
 
-        # 验证（只在最后一个epoch计算完整指标以节省时间）
-        # 大部分epoch只计算loss，最后一个epoch计算完整指标
-        compute_full_metrics = epoch == args.epochs - 1
+        # 验证：根据 eval_interval 决定是否计算完整指标
+        # eval_interval=0 表示只在最后一个epoch计算，否则每N个epoch计算一次
+        is_last_epoch = (epoch == args.epochs - 1)
+        is_eval_epoch = (args.eval_interval > 0 and epoch % args.eval_interval == 0)
+        compute_full_metrics = is_last_epoch or is_eval_epoch
 
         # 使用EMA模型进行验证（如果启用）
         val_model = ema.ema if ema else model
@@ -668,6 +672,7 @@ def main():
                     # 更新plotter以包含完整指标
                     all_metrics = {'train_loss': train_loss, **val_metrics}
                     plotter.update(epoch, all_metrics)
+                    plotter.save_metrics_csv()
                     # 打印最终指标
                     print(f'\n{colorstr("bright_yellow", "Final Metrics")}:')
                     print(f'  Precision: {val_metrics.get("precision", 0):.4f}')
@@ -685,6 +690,9 @@ def main():
 
         # 更新可视化（非早停情况）
         plotter.update(epoch, all_metrics)
+
+        # 实时保存CSV，防止中断丢失数据
+        plotter.save_metrics_csv()
 
         # 打印指标
         print(f'\n{colorstr("bright_yellow", "Results")}:')
