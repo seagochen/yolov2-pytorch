@@ -756,10 +756,6 @@ def main():
                 if early_stopping:
                     early_stopping.reset()
 
-        # 定期保存
-        if (epoch + 1) % 10 == 0:
-            torch.save(ckpt, weights_dir / f'epoch_{epoch+1}.pt')
-
     # 训练结束
     print('\n' + '='*60)
     print(colorstr('bright_green', 'bold', 'Training completed!'))
