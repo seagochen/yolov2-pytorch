@@ -5,6 +5,7 @@ Common layers for YOLOv2
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from typing import Optional
 
 
@@ -84,6 +85,14 @@ class SpaceToDepth(nn.Module):
         """
         B, C, H, W = x.shape
         bs = self.block_size
+
+        # 若尺寸不能整除，进行最小零填充以防止view报错
+        pad_h = (bs - H % bs) % bs
+        pad_w = (bs - W % bs) % bs
+        if pad_h or pad_w:
+            x = F.pad(x, (0, pad_w, 0, pad_h))
+            H += pad_h
+            W += pad_w
 
         # 重塑张量
         # (B, C, H, W) -> (B, C, H//bs, bs, W//bs, bs)

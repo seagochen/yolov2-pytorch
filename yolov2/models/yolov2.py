@@ -34,12 +34,11 @@ class YOLOv2(nn.Module):
 
         self.num_classes = num_classes
         self.img_size = img_size
-        self.grid_size = img_size // 32  # 默认20 for 640x640
         self.conf_threshold = conf_threshold
 
         # 初始化anchors
         if anchors is None:
-            self.anchors = torch.tensor([
+            anchors_tensor = torch.tensor([
                 [0.57273, 0.677385],
                 [1.87446, 2.06253],
                 [3.33843, 5.47434],
@@ -47,7 +46,10 @@ class YOLOv2(nn.Module):
                 [9.77052, 9.16828]
             ], dtype=torch.float32)
         else:
-            self.anchors = torch.from_numpy(anchors).float()
+            anchors_tensor = torch.as_tensor(anchors, dtype=torch.float32)
+
+        # 注册为buffer，自动随模型迁移/保存
+        self.register_buffer('anchors', anchors_tensor)
 
         self.num_anchors = len(self.anchors)
 
@@ -116,13 +118,15 @@ class YOLOv2(nn.Module):
         detection = self.detection_out(detection)
         # (B, num_anchors*(5+num_classes), 20, 20)
 
+        grid_h, grid_w = detection.shape[2:]
+
         # 重塑输出
         detection = detection.view(
             B,
             self.num_anchors,
             5 + self.num_classes,
-            self.grid_size,
-            self.grid_size
+            grid_h,
+            grid_w
         )
 
         # 调整维度顺序
@@ -158,13 +162,17 @@ class YOLOv2(nn.Module):
         self.eval()
         output = self.forward(x)
 
-        return self._decode_predictions_vectorized(output, conf_threshold, device)
+        img_h, img_w = x.shape[2:]
+
+        return self._decode_predictions_vectorized(output, conf_threshold, device, img_h, img_w)
 
     def _decode_predictions_vectorized(
         self,
         output: torch.Tensor,
         conf_threshold: float,
-        device: torch.device
+        device: torch.device,
+        img_h: int,
+        img_w: int
     ) -> List[List[Dict]]:
         """
         向量化解码，大幅提升速度
@@ -172,8 +180,7 @@ class YOLOv2(nn.Module):
         B, num_anchors, grid_h, grid_w, _ = output.shape
 
         # 移动anchors到正确设备
-        if self.anchors.device != device:
-            self.anchors = self.anchors.to(device)
+        anchors = self.anchors if self.anchors.device == device else self.anchors.to(device)
 
         # 1. 提取各个分量
         tx = output[..., 0]
@@ -188,8 +195,8 @@ class YOLOv2(nn.Module):
         sigmoid_ty = torch.sigmoid(ty)
         conf = torch.sigmoid(conf_raw)
 
-        # Softmax on classes
-        class_probs = torch.softmax(class_raw, dim=-1)
+        # Sigmoid per-class，保持与BCE训练一致
+        class_probs = torch.sigmoid(class_raw)
         max_class_prob, class_id = torch.max(class_probs, dim=-1)
 
         # 3. 计算最终置信度
@@ -207,8 +214,8 @@ class YOLOv2(nn.Module):
         grid_y = grid_y.view(1, 1, grid_h, grid_w).expand(B, num_anchors, -1, -1)
 
         # 扩展anchors
-        anchor_w = self.anchors[:, 0].view(1, num_anchors, 1, 1).expand(B, -1, grid_h, grid_w)
-        anchor_h = self.anchors[:, 1].view(1, num_anchors, 1, 1).expand(B, -1, grid_h, grid_w)
+        anchor_w = anchors[:, 0].view(1, num_anchors, 1, 1).expand(B, -1, grid_h, grid_w)
+        anchor_h = anchors[:, 1].view(1, num_anchors, 1, 1).expand(B, -1, grid_h, grid_w)
 
         # 5. 计算绝对坐标 (归一化 0~1)
         bx = (sigmoid_tx + grid_x) / grid_w
@@ -217,10 +224,10 @@ class YOLOv2(nn.Module):
         bh = (anchor_h * torch.exp(th)) / grid_h
 
         # 6. 转换为像素坐标 (x1, y1, x2, y2)
-        cx = bx * self.img_size
-        cy = by * self.img_size
-        w = bw * self.img_size
-        h = bh * self.img_size
+        cx = bx * img_w
+        cy = by * img_h
+        w = bw * img_w
+        h = bh * img_h
 
         x1 = cx - w / 2
         y1 = cy - h / 2
@@ -228,10 +235,10 @@ class YOLOv2(nn.Module):
         y2 = cy + h / 2
 
         # 裁剪到图像边缘
-        x1 = x1.clamp(min=0, max=self.img_size)
-        y1 = y1.clamp(min=0, max=self.img_size)
-        x2 = x2.clamp(min=0, max=self.img_size)
-        y2 = y2.clamp(min=0, max=self.img_size)
+        x1 = x1.clamp(min=0, max=img_w)
+        y1 = y1.clamp(min=0, max=img_h)
+        x2 = x2.clamp(min=0, max=img_w)
+        y2 = y2.clamp(min=0, max=img_h)
 
         # 7. 过滤低置信度结果并转换为 List[List[Dict]]
         batch_predictions = []
@@ -277,7 +284,7 @@ class YOLOv2(nn.Module):
             'num_classes': self.num_classes,
             'anchors': self.anchors.cpu().numpy().tolist(),
             'img_size': self.img_size,
-            'grid_size': self.grid_size,
+            'grid_size_hint': self.img_size // 32,
             'num_anchors': self.num_anchors,
             'conf_threshold': self.conf_threshold
         }
