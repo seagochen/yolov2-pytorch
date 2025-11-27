@@ -117,7 +117,7 @@ def parse_args():
     parser.add_argument('--name', type=str, default='exp',
                         help='Experiment name')
     parser.add_argument('--resume', type=str, default='',
-                        help='Resume from checkpoint')
+                        help='Resume from experiment name (e.g. "exp_2")')
     parser.add_argument('--device', type=str, default='0',
                         help='CUDA device, i.e. 0 or 0,1,2,3 or cpu')
     parser.add_argument('--seed', type=int, default=0,
@@ -580,9 +580,19 @@ def main():
     ema_val_loss = None
     ema_alpha = 0.1  # EMA衰减系数，越小越平滑
 
-    if args.resume and os.path.exists(args.resume):
-        print(colorstr('bright_cyan', f'\nResuming from {args.resume}'))
-        ckpt = torch.load(args.resume, map_location=device, weights_only=False)
+    # 解析 resume 参数：通过实验名称查找 project/exp_name/weights/last.pt
+    resume_path = None
+    if args.resume:
+        candidate = Path(args.project) / args.resume / 'weights' / 'last.pt'
+        if candidate.exists():
+            resume_path = str(candidate)
+        else:
+            print(colorstr('red', f'WARNING: Cannot find checkpoint for "{args.resume}"'))
+            print(f'  Tried: {candidate}')
+
+    if resume_path:
+        print(colorstr('bright_cyan', f'\nResuming from {resume_path}'))
+        ckpt = torch.load(resume_path, map_location=device, weights_only=False)
         model.load_state_dict(ckpt['model'])
         optimizer.load_state_dict(ckpt['optimizer'])
         start_epoch = ckpt['epoch']
@@ -604,8 +614,13 @@ def main():
     print('='*60)
 
     for epoch in range(start_epoch, args.epochs):
-        print(f'\n{colorstr("bright_cyan", "bold", f"Epoch {epoch}/{args.epochs-1}")}')
-        print(f'LR: {optimizer.param_groups[0]["lr"]:.6f}')
+        # Print epoch info (warmup阶段使用黄色，正常阶段使用青色)
+        current_lr = optimizer.param_groups[0]['lr']
+        if epoch < args.warmup_epochs:
+            epoch_color = 'bright_yellow'
+        else:
+            epoch_color = 'bright_cyan'
+        print(f'\n{colorstr(epoch_color, "bold", f"Epoch {epoch}/{args.epochs-1}")} | LR: {current_lr:.2e}')
 
         # 训练（传入新的组件）
         train_loss, train_dict = train_one_epoch(
@@ -694,10 +709,7 @@ def main():
         plotter.save_metrics_csv()
 
         # 打印指标
-        print(f'\n{colorstr("bright_yellow", "Results")}:')
-        print(f'  Train Loss: {train_loss:.4f}')
         current_val_loss = val_metrics.get("val_loss", 0)
-        print(f'  Val Loss: {current_val_loss:.4f}')
 
         # 计算EMA平滑验证损失
         if ema_val_loss is None:
@@ -705,13 +717,9 @@ def main():
         else:
             ema_val_loss = ema_alpha * current_val_loss + (1 - ema_alpha) * ema_val_loss
 
-        print(f'  Val Loss (EMA): {ema_val_loss:.4f}')
-
+        print(f"Train Loss: {train_loss:.4f} | Val Loss: {current_val_loss:.4f} (EMA: {ema_val_loss:.4f})")
         if 'precision' in val_metrics:
-            print(f'  Precision: {val_metrics["precision"]:.4f}')
-            print(f'  Recall: {val_metrics["recall"]:.4f}')
-            print(f'  mAP@0.5: {val_metrics.get("mAP@0.5", 0):.4f}')
-            print(f'  F1: {val_metrics.get("f1", 0):.4f}')
+            print(f"mAP@0.5: {val_metrics.get('mAP@0.5', 0):.4f} | P: {val_metrics['precision']:.4f} | R: {val_metrics['recall']:.4f}")
 
         # 保存检查点（包含微调组件状态）
         ckpt = {
@@ -737,31 +745,40 @@ def main():
 
         # 保存最佳（基于mAP或EMA平滑后的val_loss）
         current_map = val_metrics.get('mAP@0.5', 0)
+        save_best = False
+        save_reason = ""
+
         if current_map > 0:  # 如果计算了mAP，使用mAP作为标准
             if current_map > best_map:
+                save_best = True
+                save_reason = f"mAP improved: {best_map:.4f} -> {current_map:.4f}"
                 best_map = current_map
                 ckpt['best_map'] = best_map
-                torch.save(ckpt, weights_dir / 'best.pt')
-                print(colorstr('bright_green', f'  ★ New best model! mAP@0.5: {best_map:.4f}'))
-                # 模型更新时重置早停计数器
-                if early_stopping:
-                    early_stopping.reset()
-        else:  # 否则使用EMA平滑后的val_loss作为标准（越小越好）
             if ema_val_loss < best_val_loss:
+                if save_reason:
+                    save_reason += f", val_loss (EMA) improved: {best_val_loss:.4f} -> {ema_val_loss:.4f}"
+                else:
+                    save_best = True
+                    save_reason = f"val_loss (EMA) improved: {best_val_loss:.4f} -> {ema_val_loss:.4f}"
                 best_val_loss = ema_val_loss
                 ckpt['best_val_loss'] = best_val_loss
-                torch.save(ckpt, weights_dir / 'best.pt')
-                print(colorstr('bright_green', f'  ★ New best model! Val Loss (EMA): {ema_val_loss:.4f}'))
-                # 模型更新时重置早停计数器
-                if early_stopping:
-                    early_stopping.reset()
+        else:  # 否则使用EMA平滑后的val_loss作为标准（越小越好）
+            if ema_val_loss < best_val_loss:
+                save_best = True
+                save_reason = f"val_loss (EMA) improved: {best_val_loss:.4f} -> {ema_val_loss:.4f}"
+                best_val_loss = ema_val_loss
+                ckpt['best_val_loss'] = best_val_loss
+
+        if save_best:
+            torch.save(ckpt, weights_dir / 'best.pt')
+            print(colorstr('bright_green', f"New best model saved: {save_reason}"))
+            # 模型更新时重置早停计数器
+            if early_stopping:
+                early_stopping.reset()
 
     # 训练结束
-    print('\n' + '='*60)
-    print(colorstr('bright_green', 'bold', 'Training completed!'))
-    print(f'Best mAP@0.5: {best_map:.4f}')
-    print(f'Results saved to: {save_dir}')
-    print('='*60)
+    print(f"\nTraining complete. Results saved to {save_dir}")
+    print(f"Best val_loss (EMA): {best_val_loss:.4f}, Best mAP@0.5: {best_map:.4f}")
 
     # 生成最终可视化
     print(colorstr('bright_cyan', '\nGenerating final plots...'))

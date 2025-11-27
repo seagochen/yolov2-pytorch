@@ -130,7 +130,7 @@ python scripts/train.py \
 --workers       Number of data loading workers (default: 4)
 --project       Save directory (default: runs/train)
 --name          Experiment name (default: exp)
---resume        Resume from checkpoint
+--resume        Resume from experiment name (e.g. "exp_2", auto-finds last.pt)
 --grad-clip     Gradient clipping threshold (default: 10.0)
 --warmup-epochs Warmup epochs before cosine annealing (default: 3)
 ```
